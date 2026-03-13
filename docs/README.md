@@ -26,6 +26,7 @@ Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operati
 
 | Guide | Description |
 |-------|-------------|
+| [Integration Contract](integration-contract.md) | Frozen app-facing contract for SDKs, backends, gateways, auth, and base URL usage |
 | [Channel Adapters](channel-adapters.md) | 40 messaging channels -- setup, configuration, custom adapters |
 | [LLM Providers](providers.md) | 20 providers, 51 models, 23 aliases -- setup and model routing |
 | [Skills](skill-development.md) | 60 bundled skills, custom skill development, FangHub marketplace |
@@ -62,7 +63,7 @@ Welcome to the OpenFang documentation. OpenFang is the open-source Agent Operati
 ```bash
 export GROQ_API_KEY="your-key"
 openfang init && openfang start
-# Open http://127.0.0.1:4200
+# Open http://127.0.0.1:50051
 ```
 
 ### Key Numbers

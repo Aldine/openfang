@@ -26,7 +26,7 @@ body:
       description: How can we reproduce this?
       placeholder: |
         1. Run `openfang start`
-        2. Open dashboard at http://localhost:4200
+        2. Open dashboard at http://localhost:50051
         3. Click ...
     validations:
       required: true

@@ -140,13 +140,13 @@ curl -sSf https://raw.githubusercontent.com/RightNow-AI/openfang/main/scripts/in
 ```bash
 docker build -t openfang:local .
 docker run --rm openfang:local --version
-docker run --rm -p 4200:4200 -v openfang-data:/data openfang:local start
+docker run --rm -p 50051:50051 -v openfang-data:/data openfang:local start
 ```
 
 Confirm:
 - Binary runs and prints version
 - `start` command boots the kernel and API server
-- Port 4200 is accessible
+- Port 50051 is accessible
 - `/data` volume persists between container restarts
 
 ---

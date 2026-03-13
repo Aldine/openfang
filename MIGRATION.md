@@ -114,7 +114,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 decay_rate = 0.05
 
 [network]
-listen_addr = "127.0.0.1:4200"
+listen_addr = "127.0.0.1:50051"
 ```
 
 ### 3. Convert Agent Manifests

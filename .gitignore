@@ -36,6 +36,16 @@ BUILD_LOG.md
 .DS_Store
 Thumbs.db
 
+# Node
+node_modules/
+.next/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+
+# Next.js runtime data
+sdk/javascript/examples/nextjs-app-router/.data/
+
 # IDE & tools
 .idea/
 .vscode/

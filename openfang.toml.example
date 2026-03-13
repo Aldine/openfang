@@ -16,7 +16,7 @@ decay_rate = 0.05                         # Memory confidence decay rate
 # sqlite_path = "~/.openfang/data/openfang.db"   # Optional: custom DB path
 
 [network]
-listen_addr = "127.0.0.1:4200"           # OFP listen address
+listen_addr = "127.0.0.1:50051"           # OFP listen address
 # shared_secret = ""                      # Required for P2P authentication
 
 # Session compaction (LLM-based context management)

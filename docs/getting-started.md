@@ -67,7 +67,7 @@ docker pull ghcr.io/RightNow-AI/openfang:latest
 
 docker run -d \
   --name openfang \
-  -p 4200:4200 \
+  -p 50051:50051 \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -v openfang-data:/data \
   ghcr.io/RightNow-AI/openfang:latest
@@ -140,7 +140,7 @@ api_key_env = "GROQ_API_KEY"           # Env var holding the API key
 decay_rate = 0.05                      # Memory confidence decay rate
 
 [network]
-listen_addr = "127.0.0.1:4200"        # OFP listen address
+listen_addr = "127.0.0.1:50051"        # OFP listen address
 ```
 
 ### Verify Your Setup
@@ -279,14 +279,14 @@ Output:
 
 ```
 Starting OpenFang daemon...
-OpenFang daemon running on http://127.0.0.1:4200
+OpenFang daemon running on http://127.0.0.1:50051
 Press Ctrl+C to stop.
 ```
 
 The daemon provides:
-- **REST API** at `http://127.0.0.1:4200/api/`
-- **WebSocket** endpoint at `ws://127.0.0.1:4200/api/agents/{id}/ws`
-- **WebChat UI** at `http://127.0.0.1:4200/`
+- **REST API** at `http://127.0.0.1:50051/api/`
+- **WebSocket** endpoint at `ws://127.0.0.1:50051/api/agents/{id}/ws`
+- **WebChat UI** at `http://127.0.0.1:50051/`
 - **OFP networking** on port 4200
 
 ### Check Status
@@ -300,7 +300,7 @@ openfang status
 Press `Ctrl+C` in the terminal running the daemon, or:
 
 ```bash
-curl -X POST http://127.0.0.1:4200/api/shutdown
+curl -X POST http://127.0.0.1:50051/api/shutdown
 ```
 
 ---
@@ -310,7 +310,7 @@ curl -X POST http://127.0.0.1:4200/api/shutdown
 With the daemon running, open your browser to:
 
 ```
-http://127.0.0.1:4200/
+http://127.0.0.1:50051/
 ```
 
 The embedded WebChat UI allows you to:

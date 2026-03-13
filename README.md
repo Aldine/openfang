@@ -45,7 +45,7 @@ The entire system compiles to a **single ~32MB binary**. One install, one comman
 curl -fsSL https://openfang.sh/install | sh
 openfang init
 openfang start
-# Dashboard live at http://localhost:4200
+# Dashboard live at http://localhost:50051
 ```
 
 <details>
@@ -300,8 +300,9 @@ The migration engine imports your agents, conversation history, skills, and conf
 Drop-in replacement. Point your existing tools at OpenFang:
 
 ```bash
-curl -X POST localhost:4200/v1/chat/completions \
+curl -X POST localhost:50051/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $OPENFANG_API_KEY" \
   -d '{
     "model": "researcher",
     "messages": [{"role": "user", "content": "Analyze Q4 market trends"}],
@@ -325,16 +326,19 @@ openfang init
 # 3. Start the daemon
 openfang start
 
-# 4. Dashboard is live at http://localhost:4200
+# 4. App backends should use OPENFANG_BASE_URL=http://127.0.0.1:50051
+#    and send Authorization: Bearer $OPENFANG_API_KEY when auth is enabled.
 
-# 5. Activate a Hand — it starts working for you
+# 5. Dashboard is live at http://localhost:50051
+
+# 6. Activate a Hand — it starts working for you
 openfang hand activate researcher
 
-# 6. Chat with an agent
+# 7. Chat with an agent
 openfang chat researcher
 > "What are the emerging trends in AI agent frameworks?"
 
-# 7. Spawn a pre-built agent
+# 8. Spawn a pre-built agent
 openfang agent spawn coder
 ```
 

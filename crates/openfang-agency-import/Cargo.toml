@@ -1,0 +1,13 @@
+[package]
+name = "openfang-agency-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Markdown importer for OpenFang agency profiles"
+
+[dependencies]
+openfang-types = { path = "../openfang-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]

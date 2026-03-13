@@ -12,6 +12,31 @@ env:
 
 jobs:
   # ── Rust library crates (all 3 platforms) ──────────────────────────────────
+  build-lib:
+    name: Build libs / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build-lib-${{ matrix.os }}
+      - name: Install Tauri system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+      - run: cargo build --workspace --lib
+
   check:
     name: Check / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

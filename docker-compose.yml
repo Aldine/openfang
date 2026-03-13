@@ -7,13 +7,18 @@ services:
   openfang:
     build: .
     # image: ghcr.io/rightnow-ai/openfang:latest  # Uncomment when GHCR is public
+    env_file:
+      - .env
     ports:
-      - "4200:4200"
+      - "50051:50051"
     volumes:
       - openfang-data:/data
+      - ./openfang.toml:/data/config.toml:ro
     environment:
+      - OPENFANG_LISTEN=0.0.0.0:50051
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}

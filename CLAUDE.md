@@ -3,7 +3,7 @@
 ## Project Overview
 OpenFang is an open-source Agent Operating System written in Rust (14 crates).
 - Config: `~/.openfang/config.toml`
-- Default API: `http://127.0.0.1:4200`
+- Default API: `http://127.0.0.1:50051`
 - CLI binary: `target/release/openfang.exe` (or `target/debug/openfang.exe`)
 
 ## Build & Verify Workflow
@@ -40,32 +40,32 @@ cargo build --release -p openfang-cli
 ```bash
 GROQ_API_KEY=<key> target/release/openfang.exe start &
 sleep 6  # Wait for full boot
-curl -s http://127.0.0.1:4200/api/health  # Verify it's up
+curl -s http://127.0.0.1:50051/api/health  # Verify it's up
 ```
 The daemon command is `start` (not `daemon`).
 
 #### Step 4: Test every new endpoint
 ```bash
 # GET endpoints — verify they return real data, not empty/null
-curl -s http://127.0.0.1:4200/api/<new-endpoint>
+curl -s http://127.0.0.1:50051/api/<new-endpoint>
 
 # POST/PUT endpoints — send real payloads
-curl -s -X POST http://127.0.0.1:4200/api/<endpoint> \
+curl -s -X POST http://127.0.0.1:50051/api/<endpoint> \
   -H "Content-Type: application/json" \
   -d '{"field": "value"}'
 
 # Verify write endpoints persist — read back after writing
-curl -s -X PUT http://127.0.0.1:4200/api/<endpoint> -d '...'
-curl -s http://127.0.0.1:4200/api/<endpoint>  # Should reflect the update
+curl -s -X PUT http://127.0.0.1:50051/api/<endpoint> -d '...'
+curl -s http://127.0.0.1:50051/api/<endpoint>  # Should reflect the update
 ```
 
 #### Step 5: Test real LLM integration
 ```bash
 # Get an agent ID
-curl -s http://127.0.0.1:4200/api/agents | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])"
+curl -s http://127.0.0.1:50051/api/agents | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])"
 
 # Send a real message (triggers actual LLM call to Groq/OpenAI)
-curl -s -X POST "http://127.0.0.1:4200/api/agents/<id>/message" \
+curl -s -X POST "http://127.0.0.1:50051/api/agents/<id>/message" \
   -H "Content-Type: application/json" \
   -d '{"message": "Say hello in 5 words."}'
 ```
@@ -73,14 +73,14 @@ curl -s -X POST "http://127.0.0.1:4200/api/agents/<id>/message" \
 #### Step 6: Verify side effects
 After an LLM call, verify that any metering/cost/usage tracking updated:
 ```bash
-curl -s http://127.0.0.1:4200/api/budget       # Cost should have increased
-curl -s http://127.0.0.1:4200/api/budget/agents  # Per-agent spend should show
+curl -s http://127.0.0.1:50051/api/budget       # Cost should have increased
+curl -s http://127.0.0.1:50051/api/budget/agents  # Per-agent spend should show
 ```
 
 #### Step 7: Verify dashboard HTML
 ```bash
 # Check that new UI components exist in the served HTML
-curl -s http://127.0.0.1:4200/ | grep -c "newComponentName"
+curl -s http://127.0.0.1:50051/ | grep -c "newComponentName"
 # Should return > 0
 ```
 
@@ -106,12 +106,27 @@ taskkill //PID <pid> //F
 | `/api/a2a/send` | POST | Send task to external A2A agent |
 | `/api/a2a/tasks/{id}/status` | GET | Check external A2A task status |
 
+## Frontend Architecture (DECIDED: Next.js is primary)
+
+**Primary frontend:** `sdk/javascript/examples/nextjs-app-router/` — port 3002
+- Start: `cd sdk/javascript/examples/nextjs-app-router && npm run dev -- --port 3002`
+- Proxies API calls to `http://127.0.0.1:50051` via Next.js API routes
+- Design tokens in `app/globals.css` match backend design system exactly
+- Do all UI work here. This is the chosen direction.
+
+**Legacy frontend:** `crates/openfang-api/static/` — FROZEN, do not patch
+- `GET /` at port 50051 now redirects to `http://localhost:3002` (primary)
+- Override: set `OPENFANG_LEGACY_UI=1` env var to bypass redirect and serve Alpine
+- Override redirect target: set `OPENFANG_DASHBOARD_URL=http://...` env var
+- Do NOT add CSS/JS/HTML patches to static/ files
+
+**Mobile/Capacitor:** Deferred. `mobile/` directory does not exist. Build only after Next.js is stable.
+
 ## Architecture Notes
 - **Don't touch `openfang-cli`** — user is actively building the interactive CLI
 - `KernelHandle` trait avoids circular deps between runtime and kernel
 - `AppState` in `server.rs` bridges kernel to API routes
 - New routes must be registered in `server.rs` router AND implemented in `routes.rs`
-- Dashboard is Alpine.js SPA in `static/index_body.html` — new tabs need both HTML and JS data/methods
 - Config fields need: struct field + `#[serde(default)]` + Default impl entry + Serialize/Deserialize derives
 
 ## Common Gotchas
