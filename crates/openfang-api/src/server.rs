@@ -1,13 +1,18 @@
 //! OpenFang daemon server — boots the kernel and serves the HTTP API.
 
 use crate::channel_bridge;
+use crate::api_response::ApiError;
 use crate::middleware;
 use crate::rate_limiter;
+use crate::request_context::RequestId;
 use crate::routes::{self, AppState};
 use crate::webchat;
 use crate::ws;
-use axum::Router;
+use axum::{extract::OriginalUri, http::Method, Extension, Router};
 use openfang_kernel::OpenFangKernel;
+use openfang_orchestrator::{
+    support_triage_workflow, InMemoryWorkflowStore, MockWorkflowExecutor, WorkflowEngine,
+};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -16,6 +21,40 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
+
+fn request_id_from_extension(request_id: Option<Extension<RequestId>>) -> Option<String> {
+    request_id.map(|Extension(id)| id.0)
+}
+
+async fn not_found_handler(
+    method: Method,
+    uri: OriginalUri,
+    request_id: Option<Extension<RequestId>>,
+) -> impl axum::response::IntoResponse {
+    let request_id = request_id_from_extension(request_id);
+    tracing::warn!(
+        route = uri.0.path(),
+        method = %method,
+        request_id = request_id.as_deref().unwrap_or(""),
+        "api route not found"
+    );
+    ApiError::not_found("Route not found", request_id)
+}
+
+async fn method_not_allowed_handler(
+    method: Method,
+    uri: OriginalUri,
+    request_id: Option<Extension<RequestId>>,
+) -> impl axum::response::IntoResponse {
+    let request_id = request_id_from_extension(request_id);
+    tracing::warn!(
+        route = uri.0.path(),
+        method = %method,
+        request_id = request_id.as_deref().unwrap_or(""),
+        "api method not allowed"
+    );
+    ApiError::method_not_allowed("Method not allowed", request_id)
+}
 
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -40,10 +79,22 @@ pub async fn build_router(
 ) -> (Router<()>, Arc<AppState>) {
     // Start channel bridges (Telegram, etc.)
     let bridge = channel_bridge::start_channel_bridge(kernel.clone()).await;
+    let orchestrator = Arc::new(WorkflowEngine::new(
+        Arc::new(InMemoryWorkflowStore::new()),
+        Arc::new(MockWorkflowExecutor),
+    ));
+    orchestrator
+        .register_definition(support_triage_workflow())
+        .await
+        .expect("support-triage workflow should register");
 
     let channels_config = kernel.config.channels.clone();
+    let user_rate_limiter = rate_limiter::create_user_rate_limiter();
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
+        orchestrator,
+        local_capabilities: tokio::sync::RwLock::new(None),
+        local_status: tokio::sync::RwLock::new(crate::local_inference::LocalModelStatus::default()),
         started_at: Instant::now(),
         peer_registry: kernel.peer_registry.as_ref().map(|r| Arc::new(r.clone())),
         bridge_manager: tokio::sync::Mutex::new(bridge),
@@ -51,19 +102,35 @@ pub async fn build_router(
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        user_rate_limiter,
     });
 
-    // CORS: allow localhost origins by default. If API key is set, the API
-    // is protected anyway. For development, permissive CORS is convenient.
-    let cors = if state.kernel.config.api_key.trim().is_empty() {
+    // H1: Restrict CORS to explicit headers and methods rather than Any.
+    // Allowing Any headers and methods would permit cross-origin requests with
+    // credentials, custom auth headers, and arbitrary HTTP methods.
+    let allowed_headers = [
+        axum::http::header::AUTHORIZATION,
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderName::from_static("x-api-key"),
+        axum::http::HeaderName::from_static("x-request-id"),
+    ];
+    let allowed_methods = [
+        axum::http::Method::GET,
+        axum::http::Method::POST,
+        axum::http::Method::PUT,
+        axum::http::Method::PATCH,
+        axum::http::Method::DELETE,
+        axum::http::Method::OPTIONS,
+    ];
+    let cors = if state.kernel.config.api_key.is_empty() {
         // No auth → restrict CORS to localhost origins (include both 127.0.0.1 and localhost)
         let port = listen_addr.port();
         let mut origins: Vec<axum::http::HeaderValue> = vec![
             format!("http://{listen_addr}").parse().unwrap(),
             format!("http://localhost:{port}").parse().unwrap(),
         ];
-        // Also allow common dev ports
-        for p in [3000u16, 8080] {
+        // Also allow common dev ports (3002 = Next.js primary frontend)
+        for p in [3000u16, 3002, 8080] {
             if p != port {
                 if let Ok(v) = format!("http://127.0.0.1:{p}").parse() {
                     origins.push(v);
@@ -75,21 +142,29 @@ pub async fn build_router(
         }
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
+            .allow_methods(allowed_methods.clone())
+            .allow_headers(allowed_headers.clone())
     } else {
         // Auth enabled → restrict CORS to localhost + configured origins.
         // SECURITY: CorsLayer::permissive() is dangerous — any website could
         // make cross-origin requests. Restrict to known origins instead.
         let mut origins: Vec<axum::http::HeaderValue> = vec![
             format!("http://{listen_addr}").parse().unwrap(),
-            "http://localhost:4200".parse().unwrap(),
-            "http://127.0.0.1:4200".parse().unwrap(),
+            "http://localhost:50051".parse().unwrap(),
+            "http://127.0.0.1:50051".parse().unwrap(),
             "http://localhost:8080".parse().unwrap(),
             "http://127.0.0.1:8080".parse().unwrap(),
         ];
+        // Merge explicit ENV allowlist (Playbook Rule 11: Production Domains)
+        if let Ok(env_cors) = std::env::var("OPENFANG_CORS_ORIGINS") {
+            for o in env_cors.split(',') {
+                if let Ok(v) = o.trim().parse() {
+                    origins.push(v);
+                }
+            }
+        }
         // Add the actual listen address variants
-        if listen_addr.port() != 4200 && listen_addr.port() != 8080 {
+        if listen_addr.port() != 50051 && listen_addr.port() != 8080 {
             if let Ok(v) = format!("http://localhost:{}", listen_addr.port()).parse() {
                 origins.push(v);
             }
@@ -99,23 +174,10 @@ pub async fn build_router(
         }
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
+            .allow_methods(allowed_methods)
+            .allow_headers(allowed_headers)
     };
 
-    // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
-    let api_key = state.kernel.config.api_key.trim().to_string();
-    let auth_state = crate::middleware::AuthState {
-        api_key: api_key.clone(),
-        auth_enabled: state.kernel.config.auth.enabled,
-        session_secret: if !api_key.is_empty() {
-            api_key.clone()
-        } else if state.kernel.config.auth.enabled {
-            state.kernel.config.auth.password_hash.clone()
-        } else {
-            String::new()
-        },
-    };
     let gcra_limiter = rate_limiter::create_rate_limiter();
 
     let app = Router::new()
@@ -136,6 +198,14 @@ pub async fn build_router(
         .route(
             "/api/agents",
             axum::routing::get(routes::list_agents).post(routes::spawn_agent),
+        )
+        .route(
+            "/api/agents/catalog",
+            axum::routing::get(routes::list_agent_catalog),
+        )
+        .route(
+            "/api/agents/catalog/{id}/enabled",
+            axum::routing::put(routes::update_agent_catalog),
         )
         .route(
             "/api/agents/{id}",
@@ -165,6 +235,95 @@ pub async fn build_router(
         .route(
             "/api/agents/{id}/sessions/{session_id}/switch",
             axum::routing::post(routes::switch_agent_session),
+        )
+        .route(
+            "/api/planner/inbox",
+            axum::routing::get(routes::list_planner_inbox)
+                .post(routes::create_planner_inbox_item),
+        )
+        .route(
+            "/api/planner/clarify",
+            axum::routing::post(routes::clarify_planner_inbox_item),
+        )
+        .route(
+            "/api/planner/today",
+            axum::routing::get(routes::get_planner_today),
+        )
+        .route(
+            "/api/planner/today/rebuild",
+            axum::routing::post(routes::rebuild_planner_today),
+        )
+        .route(
+            "/api/planner/agents",
+            axum::routing::get(routes::list_planner_agents),
+        )
+        .route(
+            "/api/planner/agents/{id}",
+            axum::routing::put(routes::update_planner_agent),
+        )
+        .route(
+            "/api/agency/import",
+            axum::routing::post(routes::import_agency_profile),
+        )
+        .route(
+            "/api/agency/profiles",
+            axum::routing::get(routes::list_agency_profiles),
+        )
+        .route(
+            "/api/agency/profiles/{id}",
+            axum::routing::get(routes::get_agency_profile),
+        )
+        .route(
+            "/api/agency/profiles/{id}/enabled",
+            axum::routing::put(routes::update_agency_profile_enabled),
+        )
+        .route(
+            "/api/agency/roster",
+            axum::routing::get(routes::get_agency_roster),
+        )
+        .route(
+            "/api/agency/route",
+            axum::routing::post(routes::route_agency_task),
+        )
+        .route(
+            "/api/local/policy",
+            axum::routing::get(routes::get_local_policy),
+        )
+        .route(
+            "/api/local/status",
+            axum::routing::get(routes::get_local_status),
+        )
+        .route(
+            "/api/local/capabilities",
+            axum::routing::post(routes::post_local_capabilities),
+        )
+        .route(
+            "/api/local/planner/recommend",
+            axum::routing::post(routes::post_local_planner_recommend),
+        )
+        .route(
+            "/api/local/planner/split",
+            axum::routing::post(routes::post_local_planner_split),
+        )
+        .route(
+            "/api/local/planner/translate",
+            axum::routing::post(routes::post_local_planner_translate),
+        )
+        .route(
+            "/api/local/harness",
+            axum::routing::get(routes::get_local_comparison_harness),
+        )
+        .route(
+            "/api/workflows/start",
+            axum::routing::post(routes::start_orchestrated_workflow),
+        )
+        .route(
+            "/api/workflows/{run_id}/resume",
+            axum::routing::post(routes::resume_orchestrated_workflow),
+        )
+        .route(
+            "/api/workflows/{run_id}",
+            axum::routing::get(routes::get_orchestrated_workflow_run),
         )
         .route(
             "/api/agents/{id}/session/reset",
@@ -300,10 +459,6 @@ pub async fn build_router(
             axum::routing::get(routes::list_workflows).post(routes::create_workflow),
         )
         .route(
-            "/api/workflows/{id}",
-            axum::routing::get(routes::get_workflow).put(routes::update_workflow).delete(routes::delete_workflow),
-        )
-        .route(
             "/api/workflows/{id}/run",
             axum::routing::post(routes::run_workflow),
         )
@@ -437,10 +592,6 @@ pub async fn build_router(
             "/api/comms/task",
             axum::routing::post(routes::comms_task),
         )
-        ;
-
-    // Split into a second router chunk to stay within axum's type nesting limit.
-    let app = app
         // Tools endpoint
         .route("/api/tools", axum::routing::get(routes::list_tools))
         // Config endpoints
@@ -525,6 +676,17 @@ pub async fn build_router(
         )
         .route("/api/models/{*id}", axum::routing::get(routes::get_model))
         .route("/api/providers", axum::routing::get(routes::list_providers))
+        .route("/api/auth/status", axum::routing::get(routes::auth_status))
+        .route("/api/auth/me", axum::routing::get(routes::auth_me))
+        .route("/api/auth/logout", axum::routing::post(routes::auth_logout))
+        .route(
+            "/api/auth/github/start",
+            axum::routing::post(routes::auth_github_start),
+        )
+        .route(
+            "/api/auth/github/poll/{poll_id}",
+            axum::routing::get(routes::auth_github_poll),
+        )
         // Copilot OAuth (must be before parametric {name} routes)
         .route(
             "/api/providers/github-copilot/oauth/start",
@@ -690,32 +852,29 @@ pub async fn build_router(
             "/v1/models",
             axum::routing::get(crate::openai_compat::list_models),
         )
-        // Dashboard authentication endpoints
-        .route(
-            "/api/auth/login",
-            axum::routing::post(routes::auth_login),
-        )
-        .route(
-            "/api/auth/logout",
-            axum::routing::post(routes::auth_logout),
-        )
-        .route(
-            "/api/auth/check",
-            axum::routing::get(routes::auth_check),
-        )
         .layer(axum::middleware::from_fn_with_state(
-            auth_state,
+            state.clone(),
             middleware::auth,
         ))
         .layer(axum::middleware::from_fn_with_state(
             gcra_limiter,
             rate_limiter::gcra_rate_limit,
         ))
+        // C5: Per-user rate limit applied after auth so we have the AuthPrincipal.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::user_rate_limit,
+        ))
+        .layer(axum::middleware::from_fn(
+            middleware::normalize_empty_error_responses,
+        ))
         .layer(axum::middleware::from_fn(middleware::security_headers))
         .layer(axum::middleware::from_fn(middleware::request_logging))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(cors)
+        .method_not_allowed_fallback(method_not_allowed_handler)
+        .fallback(not_found_handler)
         .with_state(state.clone());
 
     (app, state)
@@ -768,7 +927,18 @@ pub async fn run_daemon(
 
     let (app, state) = build_router(kernel.clone(), addr).await;
 
-    // Write daemon info file
+    // C1: Warn loudly when the daemon is listening on a non-loopback interface
+    // without any authentication. This means any machine on the network can
+    // query and control the AI agents without credentials.
+    if state.kernel.config.api_key.is_empty() && !addr.ip().is_loopback() {
+        tracing::error!(
+            listen_addr = %addr,
+            "SECURITY WARNING: OpenFang is listening on a non-loopback interface \
+             with NO authentication configured. Any host on the network can access \
+             your agents, memories, and configuration. Set `api_key` in \
+             ~/.openfang/config.toml or bind to 127.0.0.1 only."
+        );
+    }
     if let Some(info_path) = daemon_info_path {
         // Check if another daemon is already running with this PID file
         if info_path.exists() {

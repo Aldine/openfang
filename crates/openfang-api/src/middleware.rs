@@ -6,10 +6,19 @@
 //! - In-memory rate limiting (per IP)
 
 use axum::body::Body;
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{header, Request, Response, StatusCode};
 use axum::middleware::Next;
+use axum::response::IntoResponse;
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::info;
+
+use crate::api_response::ApiError;
+use crate::auth::{self, AuthPrincipal};
+use crate::rate_limiter;
+use crate::request_context::{RequestContext, RequestId};
+use crate::routes::AppState;
+use crate::security::{log_security_event, SecurityLog};
 
 /// Request ID header name (standard).
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -17,6 +26,11 @@ pub const REQUEST_ID_HEADER: &str = "x-request-id";
 /// Middleware: inject a unique request ID and log the request/response.
 pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Body> {
     let request_id = uuid::Uuid::new_v4().to_string();
+    let mut request = request;
+    request
+        .extensions_mut()
+        .insert(RequestId(request_id.clone()));
+
     let method = request.method().clone();
     let uri = request.uri().path().to_string();
     let start = Instant::now();
@@ -43,27 +57,43 @@ pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Bod
     response
 }
 
-/// Authentication state passed to the auth middleware.
-#[derive(Clone)]
-pub struct AuthState {
-    pub api_key: String,
-    pub auth_enabled: bool,
-    pub session_secret: String,
+/// Normalize framework-generated empty 404/405 responses into the standard API envelope.
+pub async fn normalize_empty_error_responses(request: Request<Body>, next: Next) -> Response<Body> {
+    let ctx = RequestContext::from_request(&request);
+    let response = next.run(request).await;
+
+    let is_standardized = response.headers().contains_key(header::CONTENT_TYPE);
+    if is_standardized {
+        return response;
+    }
+
+    let mut replacement = match response.status() {
+        StatusCode::NOT_FOUND => ApiError::not_found("Route not found", ctx.request_id()).into_response(),
+        StatusCode::METHOD_NOT_ALLOWED => {
+            ApiError::method_not_allowed("Method not allowed", ctx.request_id()).into_response()
+        }
+        _ => return response,
+    };
+
+    if let Some(allow) = response.headers().get(header::ALLOW).cloned() {
+        replacement.headers_mut().insert(header::ALLOW, allow);
+    }
+
+    replacement
 }
 
 /// Bearer token authentication middleware.
 ///
-/// When `api_key` is non-empty (after trimming), requests to non-public
-/// endpoints must include `Authorization: Bearer <api_key>`.
-/// If the key is empty or whitespace-only, auth is disabled entirely
-/// (public/local development mode).
-///
-/// When dashboard auth is enabled, session cookies are also accepted.
+/// When `api_key` is non-empty, requests to non-public endpoints must include
+/// `Authorization: Bearer <api_key>`.
 pub async fn auth(
-    axum::extract::State(auth_state): axum::extract::State<AuthState>,
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     request: Request<Body>,
     next: Next,
 ) -> Response<Body> {
+    let mut request = request;
+    let ctx = RequestContext::from_request(&request);
+
     // SECURITY: Capture method early for method-aware public endpoint checks.
     let method = request.method().clone();
 
@@ -80,11 +110,7 @@ pub async fn auth(
         }
     }
 
-    // Public endpoints that don't require auth (dashboard needs these).
-    // SECURITY: /api/agents is GET-only (listing). POST (spawn) requires auth.
-    // SECURITY: Public endpoints are GET-only unless explicitly noted.
-    // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
-    // unauthenticated writes (cron job creation, skill install, etc.).
+    // Public endpoints that NEVER require auth (even if API key is set)
     let is_get = method == axum::http::Method::GET;
     let is_public = path == "/"
         || path == "/logo.png"
@@ -92,139 +118,66 @@ pub async fn auth(
         || (path == "/.well-known/agent.json" && is_get)
         || (path.starts_with("/a2a/") && is_get)
         || path == "/api/health"
-        || path == "/api/health/detail"
-        || path == "/api/status"
         || path == "/api/version"
-        || (path == "/api/agents" && is_get)
-        || (path == "/api/profiles" && is_get)
-        || (path == "/api/config" && is_get)
-        || (path == "/api/config/schema" && is_get)
-        || (path.starts_with("/api/uploads/") && is_get)
-        // Dashboard read endpoints — allow unauthenticated so the SPA can
-        // render before the user enters their API key.
-        || (path == "/api/models" && is_get)
-        || (path == "/api/models/aliases" && is_get)
-        || (path == "/api/providers" && is_get)
-        || (path == "/api/budget" && is_get)
-        || (path == "/api/budget/agents" && is_get)
-        || (path.starts_with("/api/budget/agents/") && is_get)
-        || (path == "/api/network/status" && is_get)
-        || (path == "/api/a2a/agents" && is_get)
-        || (path == "/api/approvals" && is_get)
-        || (path.starts_with("/api/approvals/") && is_get)
-        || (path == "/api/channels" && is_get)
-        || (path == "/api/hands" && is_get)
-        || (path == "/api/hands/active" && is_get)
-        || (path.starts_with("/api/hands/") && is_get)
-        || (path == "/api/skills" && is_get)
-        || (path == "/api/sessions" && is_get)
-        || (path == "/api/integrations" && is_get)
-        || (path == "/api/integrations/available" && is_get)
-        || (path == "/api/integrations/health" && is_get)
-        || (path == "/api/workflows" && is_get)
-        || path == "/api/logs/stream"  // SSE stream, read-only
-        || (path.starts_with("/api/cron/") && is_get)
-        || path.starts_with("/api/providers/github-copilot/oauth/")
-        || path == "/api/auth/login"
-        || path == "/api/auth/logout"
-        || (path == "/api/auth/check" && is_get);
+        || path == "/api/auth/status"
+        || path == "/api/auth/github/start"
+        || path.starts_with("/api/auth/github/poll/")
+        || path.starts_with("/api/providers/github-copilot/oauth/");
 
     if is_public {
         return next.run(request).await;
     }
 
-    // If no API key configured (empty, whitespace-only, or missing), skip auth
-    // entirely. Users who don't set api_key accept that all endpoints are open.
-    // To secure the dashboard, set a non-empty api_key in config.toml.
-    let api_key_trimmed = auth_state.api_key.trim().to_string();
-    if api_key_trimmed.is_empty() && !auth_state.auth_enabled {
-        return next.run(request).await;
-    }
-    let api_key = api_key_trimmed.as_str();
-
-    // Check Authorization: Bearer <token> header, then fallback to X-API-Key
-    let bearer_token = request
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    let api_token = bearer_token.or_else(|| {
-        request
-            .headers()
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-    });
-
-    // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let header_auth = api_token.map(|token| {
-        use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(api_key.as_bytes()).into()
-    });
-
-    // Also check ?token= query parameter (for EventSource/SSE clients that
-    // cannot set custom headers, same approach as WebSocket auth).
-    let query_token = request
-        .uri()
-        .query()
-        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")));
-
-    // SECURITY: Use constant-time comparison to prevent timing attacks.
-    let query_auth = query_token.map(|token| {
-        use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(api_key.as_bytes()).into()
-    });
-
-    // Accept if either auth method matches
-    if header_auth == Some(true) || query_auth == Some(true) {
+    if !auth::auth_required(&state) {
         return next.run(request).await;
     }
 
-    // Check session cookie (dashboard login sessions)
-    if auth_state.auth_enabled {
-        if let Some(token) = extract_session_cookie(&request) {
-            if crate::session_auth::verify_session_token(&token, &auth_state.session_secret)
-                .is_some()
-            {
-                return next.run(request).await;
-            }
+    match auth::resolve_principal(request.headers(), request.uri(), &state) {
+        Ok(Some(principal)) => {
+            let actor_type = match &principal {
+                AuthPrincipal::ApiKey => "api_key",
+                AuthPrincipal::User(_) => "jwt",
+            };
+            request.extensions_mut().insert(principal);
+            log_security_event(
+                &SecurityLog::new("auth.success", "info", "success", &ctx)
+                    .actor_type(actor_type),
+            );
+            next.run(request).await
+        }
+        Ok(None) => {
+            log_security_event(
+                &SecurityLog::new("auth.missing_token", "warn", "denied", &ctx)
+                    .actor_type("bearer")
+                    .reason("missing api key or session token"),
+            );
+
+            let mut response = ApiError::unauthorized(
+                "Missing Authorization: Bearer <api_key_or_session_token> header",
+                ctx.request_id(),
+            )
+            .into_response();
+            response.headers_mut().insert(
+                axum::http::header::WWW_AUTHENTICATE,
+                axum::http::HeaderValue::from_static("Bearer"),
+            );
+            response
+        }
+        Err(error_msg) => {
+            log_security_event(
+                &SecurityLog::new("auth.invalid_token", "warn", "denied", &ctx)
+                    .actor_type("bearer")
+                    .reason(&error_msg),
+            );
+
+            let mut response = ApiError::unauthorized(error_msg, ctx.request_id()).into_response();
+            response.headers_mut().insert(
+                axum::http::header::WWW_AUTHENTICATE,
+                axum::http::HeaderValue::from_static("Bearer"),
+            );
+            response
         }
     }
-
-    // Determine error message: was a credential provided but wrong, or missing entirely?
-    let credential_provided = header_auth.is_some() || query_auth.is_some();
-    let error_msg = if credential_provided {
-        "Invalid API key"
-    } else {
-        "Missing Authorization: Bearer <api_key> header"
-    };
-
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header("www-authenticate", "Bearer")
-        .body(Body::from(
-            serde_json::json!({"error": error_msg}).to_string(),
-        ))
-        .unwrap_or_default()
-}
-
-/// Extract the `openfang_session` cookie value from a request.
-fn extract_session_cookie(request: &Request<Body>) -> Option<String> {
-    request
-        .headers()
-        .get("cookie")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies
-                .split(';')
-                .find_map(|c| c.trim().strip_prefix("openfang_session=").map(|v| v.to_string()))
-        })
 }
 
 /// Security headers middleware — applied to ALL API responses.
@@ -256,12 +209,128 @@ pub async fn security_headers(request: Request<Body>, next: Next) -> Response<Bo
     response
 }
 
+/// Per-user rate limiting middleware for LLM-heavy endpoints.
+///
+/// C5: The GCRA IP limiter (`gcra_rate_limit`) throttles anonymous and API-key
+/// access by IP. This middleware adds a second layer that throttles individual
+/// *authenticated user accounts* to prevent a single OAuth user from consuming
+/// the entire IP quota on a shared server.
+///
+/// Rate: 100 LLM tokens / minute / user_id (from JWT session).
+/// API-key principals (admin) bypass per-user limiting.
+pub async fn user_rate_limit(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    request: Request<Body>,
+    next: Next,
+) -> Response<Body> {
+    // Only restrict authenticated JWT users. API-key principals are admin-level
+    // callers (CLI, scripts) and are already throttled by the IP-based limiter.
+    let user_id = match request.extensions().get::<AuthPrincipal>() {
+        Some(AuthPrincipal::User(session)) => session.user_id.clone(),
+        _ => return next.run(request).await,
+    };
+
+    let method = request.method().as_str().to_string();
+    let path = request.uri().path().to_string();
+    let cost = rate_limiter::operation_cost(&method, &path);
+
+    match state.user_rate_limiter.check_key_n(&user_id, cost) {
+        Ok(Ok(_)) => next.run(request).await,
+        Ok(Err(_)) | Err(_) => {
+            let ctx = RequestContext::from_request(&request);
+            log_security_event(
+                &SecurityLog::new("rate_limit.user_blocked", "warn", "denied", &ctx)
+                    .actor_type("jwt")
+                    .reason(format!(
+                        "per-user token budget exhausted for user={user_id}; cost={c}",
+                        c = cost.get()
+                    )),
+            );
+            let mut response =
+                ApiError::rate_limited("Per-user rate limit exceeded", ctx.request_id())
+                    .into_response();
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("60"),
+            );
+            response
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::to_bytes,
+        routing::get,
+        Router,
+    };
+    use tower::ServiceExt;
 
     #[test]
     fn test_request_id_header_constant() {
         assert_eq!(REQUEST_ID_HEADER, "x-request-id");
+    }
+
+    #[tokio::test]
+    async fn test_normalize_empty_not_found_response() {
+        let app = Router::new()
+            .route("/ok", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(normalize_empty_error_responses))
+            .layer(axum::middleware::from_fn(request_logging));
+
+        let response = app
+            .oneshot(Request::builder().uri("/missing").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+
+        let body: serde_json::Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(body["success"], false);
+        assert_eq!(body["error"]["code"], "NOT_FOUND");
+        assert_eq!(body["error"]["message"], "Route not found");
+        assert!(body["error"]["request_id"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_normalize_empty_method_not_allowed_response_preserves_allow() {
+        let app = Router::new()
+            .route("/ok", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(normalize_empty_error_responses))
+            .layer(axum::middleware::from_fn(request_logging));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ok")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(response.headers().get(header::ALLOW).unwrap(), "GET,HEAD");
+
+        let body: serde_json::Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(body["success"], false);
+        assert_eq!(body["error"]["code"], "METHOD_NOT_ALLOWED");
+        assert_eq!(body["error"]["message"], "Method not allowed");
+        assert!(body["error"]["request_id"].is_string());
     }
 }

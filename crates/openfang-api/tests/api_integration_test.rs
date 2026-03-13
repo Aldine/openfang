@@ -9,10 +9,13 @@
 
 use axum::Router;
 use openfang_api::middleware;
+use openfang_api::rate_limiter;
 use openfang_api::routes::{self, AppState};
 use openfang_api::ws;
+use openfang_orchestrator::{InMemoryWorkflowStore, MockWorkflowExecutor, WorkflowEngine};
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
@@ -68,9 +71,16 @@ async fn start_test_server_with_provider(
     let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
+    let orchestrator = Arc::new(WorkflowEngine::new(
+        Arc::new(InMemoryWorkflowStore::new()),
+        Arc::new(MockWorkflowExecutor),
+    ));
 
     let state = Arc::new(AppState {
         kernel,
+        orchestrator,
+        local_capabilities: tokio::sync::RwLock::new(None),
+        local_status: tokio::sync::RwLock::new(openfang_api::local_inference::LocalModelStatus::default()),
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
@@ -78,6 +88,7 @@ async fn start_test_server_with_provider(
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        user_rate_limiter: rate_limiter::create_user_rate_limiter(),
     });
 
     let app = Router::new()
@@ -86,6 +97,14 @@ async fn start_test_server_with_provider(
         .route(
             "/api/agents",
             axum::routing::get(routes::list_agents).post(routes::spawn_agent),
+        )
+        .route(
+            "/api/agents/catalog",
+            axum::routing::get(routes::list_agent_catalog),
+        )
+        .route(
+            "/api/agents/catalog/{id}/enabled",
+            axum::routing::put(routes::update_agent_catalog),
         )
         .route(
             "/api/agents/{id}/message",
@@ -119,6 +138,22 @@ async fn start_test_server_with_provider(
         .route(
             "/api/workflows/{id}/runs",
             axum::routing::get(routes::list_workflow_runs),
+        )
+        .route(
+            "/api/agency/import",
+            axum::routing::post(routes::import_agency_profile),
+        )
+        .route(
+            "/api/agency/profiles",
+            axum::routing::get(routes::list_agency_profiles),
+        )
+        .route(
+            "/api/agency/profiles/{id}",
+            axum::routing::get(routes::get_agency_profile),
+        )
+        .route(
+            "/api/agency/profiles/{id}/enabled",
+            axum::routing::put(routes::update_agency_profile_enabled),
         )
         .route("/api/shutdown", axum::routing::post(routes::shutdown))
         .layer(axum::middleware::from_fn(middleware::request_logging))
@@ -269,7 +304,8 @@ async fn test_spawn_list_kill_agent() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "killed");
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["status"], "killed");
 
     // --- List (only default assistant remains) ---
     let resp = client
@@ -697,9 +733,16 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
     let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
+    let orchestrator = Arc::new(WorkflowEngine::new(
+        Arc::new(InMemoryWorkflowStore::new()),
+        Arc::new(MockWorkflowExecutor),
+    ));
 
     let state = Arc::new(AppState {
         kernel,
+        orchestrator,
+        local_capabilities: tokio::sync::RwLock::new(None),
+        local_status: tokio::sync::RwLock::new(openfang_api::local_inference::LocalModelStatus::default()),
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
@@ -707,24 +750,19 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        user_rate_limiter: rate_limiter::create_user_rate_limiter(),
     });
 
-    let api_key = state.kernel.config.api_key.trim().to_string();
-    let auth_state = middleware::AuthState {
-        api_key: api_key.clone(),
-        auth_enabled: state.kernel.config.auth.enabled,
-        session_secret: if !api_key.is_empty() {
-            api_key.clone()
-        } else if state.kernel.config.auth.enabled {
-            state.kernel.config.auth.password_hash.clone()
-        } else {
-            String::new()
-        },
-    };
+    let gcra_limiter = rate_limiter::create_rate_limiter();
 
     let app = Router::new()
         .route("/api/health", axum::routing::get(routes::health))
+        .route(
+            "/api/health/detail",
+            axum::routing::get(routes::health_detail),
+        )
         .route("/api/status", axum::routing::get(routes::status))
+        .route("/api/version", axum::routing::get(routes::version))
         .route(
             "/api/agents",
             axum::routing::get(routes::list_agents).post(routes::spawn_agent),
@@ -764,9 +802,14 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         )
         .route("/api/shutdown", axum::routing::post(routes::shutdown))
         .layer(axum::middleware::from_fn_with_state(
-            auth_state,
+            state.clone(),
             middleware::auth,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            gcra_limiter,
+            rate_limiter::gcra_rate_limit,
+        ))
+        .layer(axum::middleware::from_fn(middleware::security_headers))
         .layer(axum::middleware::from_fn(middleware::request_logging))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
@@ -803,20 +846,55 @@ async fn test_auth_health_is_public() {
 }
 
 #[tokio::test]
+async fn test_auth_version_is_public() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/version", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_auth_protects_sensitive_read_routes() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    for path in [
+        "/api/status",
+        "/api/health/detail",
+        "/api/agents",
+        "/api/triggers",
+        "/api/workflows",
+    ] {
+        let resp = client
+            .get(format!("{}{}", server.base_url, path))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401, "expected 401 for {path}");
+    }
+}
+
+#[tokio::test]
 async fn test_auth_rejects_no_token() {
     let server = start_test_server_with_auth("secret-key-123").await;
     let client = reqwest::Client::new();
 
-    // Protected endpoint without auth header → 401
-    // Note: /api/status is public (dashboard needs it), so use a protected endpoint
     let resp = client
-        .get(format!("{}/api/commands", server.base_url))
+        .get(format!("{}/api/agents", server.base_url))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 401);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("Missing"));
+    assert_eq!(body["success"], false);
+    assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+    assert!(body["error"]["message"].as_str().unwrap().contains("Missing"));
+    assert!(body["error"]["request_id"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -824,17 +902,18 @@ async fn test_auth_rejects_wrong_token() {
     let server = start_test_server_with_auth("secret-key-123").await;
     let client = reqwest::Client::new();
 
-    // Wrong bearer token → 401
-    // Note: /api/status is public (dashboard needs it), so use a protected endpoint
     let resp = client
-        .get(format!("{}/api/commands", server.base_url))
+        .get(format!("{}/api/agents", server.base_url))
         .header("authorization", "Bearer wrong-key")
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 401);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("Invalid"));
+    assert_eq!(body["success"], false);
+    assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+    assert!(body["error"]["message"].as_str().unwrap().contains("Invalid"));
+    assert!(body["error"]["request_id"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -855,6 +934,133 @@ async fn test_auth_accepts_correct_token() {
 }
 
 #[tokio::test]
+async fn test_auth_accepts_x_api_key_header() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/api/agents", server.base_url))
+        .header("x-api-key", "secret-key-123")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+}
+
+/// C2: Verify ?token= query parameter is restricted to WS/SSE endpoints only.
+///
+/// The old behavior accepted ?token= on ANY endpoint, leaking tokens into
+/// server logs and browser history. After the fix:
+///  - Regular REST endpoints (e.g. /api/agents) MUST reject ?token= → 401
+///  - Stream/WS paths accept ?token= → the test just verifies rejection on REST
+#[tokio::test]
+async fn test_auth_accepts_query_token_for_sse_style_clients() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    // C2 fix: regular REST endpoint MUST NOT accept ?token= (would leak to logs)
+    let resp = client
+        .get(format!("{}/api/agents?token=secret-key-123", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        401,
+        "C2: ?token= must be rejected on non-WS/stream endpoints"
+    );
+
+    // The Authorization header still works on REST endpoints
+    let resp = client
+        .get(format!("{}/api/agents", server.base_url))
+        .header("Authorization", "Bearer secret-key-123")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "Bearer header must still work on REST");
+}
+
+#[tokio::test]
+async fn test_auth_protects_state_changing_routes_across_methods() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    let protected_requests = vec![
+        client.post(format!("{}/api/agents", server.base_url)).json(&serde_json::json!({
+            "manifest_toml": TEST_MANIFEST
+        })),
+        client
+            .post(format!("{}/api/agents/not-a-real-agent/message", server.base_url))
+            .json(&serde_json::json!({"message": "hello"})),
+        client.delete(format!("{}/api/agents/not-a-real-agent", server.base_url)),
+        client.post(format!("{}/api/triggers", server.base_url)).json(&serde_json::json!({
+            "agent_id": "not-a-real-agent",
+            "pattern": "urgent"
+        })),
+        client.delete(format!("{}/api/triggers/not-a-trigger", server.base_url)),
+        client.post(format!("{}/api/workflows", server.base_url)).json(&serde_json::json!({
+            "steps": []
+        })),
+        client
+            .post(format!("{}/api/workflows/not-a-workflow/run", server.base_url))
+            .json(&serde_json::json!({})),
+    ];
+
+    for request in protected_requests {
+        let resp = request.send().await.unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+}
+
+#[tokio::test]
+async fn test_auth_hides_method_details_until_authorized() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    let unauth = client
+        .put(format!("{}/api/agents", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), 401);
+
+    let auth = client
+        .put(format!("{}/api/agents", server.base_url))
+        .header("authorization", "Bearer secret-key-123")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(auth.status(), 405);
+}
+
+#[tokio::test]
+async fn test_malformed_protected_request_still_requires_auth_first() {
+    let server = start_test_server_with_auth("secret-key-123").await;
+    let client = reqwest::Client::new();
+
+    let unauth = client
+        .post(format!("{}/api/agents", server.base_url))
+        .header("content-type", "application/json")
+        .body("{")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), 401);
+
+    let auth = client
+        .post(format!("{}/api/agents", server.base_url))
+        .header("authorization", "Bearer secret-key-123")
+        .header("content-type", "application/json")
+        .body("{")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(auth.status(), 400);
+}
+
+
+#[tokio::test]
 async fn test_auth_disabled_when_no_key() {
     // Empty API key = auth disabled
     let server = start_test_server().await;
@@ -867,4 +1073,172 @@ async fn test_auth_disabled_when_no_key() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_agency_profile_import_list_detail_and_toggle() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let profile_dir = server._tmp.path().join("support");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let profile_path = profile_dir.join("support-support-responder.md");
+    fs::write(
+        &profile_path,
+        "# Support Responder Agent Personality\n\n## 🧠 Your Identity & Memory\n- **Role**: Customer support specialist\n- **Personality**: Empathetic, precise\n- **Memory**: Successful support patterns\n\n## 🎯 Your Core Mission\n### Resolve customer issues\n- Keep response quality high\n\n## 🔄 Your Workflow Process\n### Step 1: Intake\n- Review context\n\n## 📋 Your Deliverable Template\n```markdown\n# Support Report\n## Summary\n```\n",
+    )
+    .unwrap();
+
+    let resp = client
+        .post(format!("{}/api/agency/import", server.base_url))
+        .json(&serde_json::json!({
+            "source_path": profile_path.display().to_string()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["profile"]["id"], "support-responder");
+    assert_eq!(body["profile"]["enabled"], true);
+
+    let resp = client
+        .get(format!("{}/api/agency/profiles", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["profiles"].as_array().unwrap().len(), 1);
+    assert_eq!(body["profiles"][0]["id"], "support-responder");
+
+    let resp = client
+        .get(format!(
+            "{}/api/agency/profiles/support-responder",
+            server.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["profile"]["display_name"], "Support Responder");
+
+    let resp = client
+        .put(format!(
+            "{}/api/agency/profiles/support-responder/enabled",
+            server.base_url
+        ))
+        .json(&serde_json::json!({ "enabled": false }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["profile"]["enabled"], false);
+
+    let resp = client
+        .get(format!(
+            "{}/api/agency/profiles/support-responder",
+            server.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["profile"]["enabled"], false);
+}
+
+#[tokio::test]
+async fn test_agent_catalog_merges_native_and_imported_entries() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let profile_dir = server._tmp.path().join("support");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let profile_path = profile_dir.join("support-support-responder.md");
+    fs::write(
+        &profile_path,
+        "# Support Responder Agent Personality\n\n## 🧠 Your Identity & Memory\n- **Role**: Customer support specialist\n- **Personality**: Empathetic, precise\n- **Memory**: Successful support patterns\n\n## 🎯 Your Core Mission\n### Resolve customer issues\n- Keep response quality high\n\n## 🔄 Your Workflow Process\n### Step 1: Intake\n- Review context\n\n## 📋 Your Deliverable Template\n```markdown\n# Support Report\n## Summary\n```\n",
+    )
+    .unwrap();
+
+    let import_resp = client
+        .post(format!("{}/api/agency/import", server.base_url))
+        .json(&serde_json::json!({
+            "source_path": profile_path.display().to_string()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(import_resp.status(), 201);
+
+    let resp = client
+        .get(format!("{}/api/agents/catalog", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agents = body["agents"].as_array().unwrap();
+    assert!(agents.iter().any(|agent| agent["catalog_id"] == "native:writer"));
+    assert!(agents
+        .iter()
+        .any(|agent| agent["catalog_id"] == "imported:support-responder"));
+
+    let resp = client
+        .put(format!(
+            "{}/api/agents/catalog/imported%3Asupport-responder/enabled",
+            server.base_url
+        ))
+        .json(&serde_json::json!({ "enabled": false }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["agent"]["catalog_id"], "imported:support-responder");
+    assert_eq!(body["agent"]["enabled"], false);
+
+    let resp = client
+        .put(format!(
+            "{}/api/agents/catalog/native%3Awriter/enabled",
+            server.base_url
+        ))
+        .json(&serde_json::json!({ "enabled": false }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["agent"]["catalog_id"], "native:writer");
+    assert_eq!(body["agent"]["enabled"], false);
+}
+
+#[tokio::test]
+async fn test_agency_profile_import_rejects_invalid_markdown() {
+    let server = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let profile_dir = server._tmp.path().join("support");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let profile_path = profile_dir.join("support-broken-profile.md");
+    fs::write(&profile_path, "# Broken Profile\n\n## 🎯 Your Core Mission\n- Help users\n")
+        .unwrap();
+
+    let resp = client
+        .post(format!("{}/api/agency/import", server.base_url))
+        .json(&serde_json::json!({
+            "source_path": profile_path.display().to_string()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Role section is required"));
 }

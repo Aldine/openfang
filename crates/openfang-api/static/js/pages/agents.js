@@ -1,21 +1,6 @@
 // OpenFang Agents Page — Multi-step spawn wizard, detail view with tabs, file editor, personality presets
 'use strict';
 
-/** Escape a string for use inside TOML triple-quoted strings ("""\n...\n""").
- *  Backslashes are escaped, and runs of 3+ consecutive double-quotes are
- *  broken up so the TOML parser never sees an unintended closing delimiter.
- */
-function tomlMultilineEscape(s) {
-  return s.replace(/\\/g, '\\\\').replace(/"""/g, '""\\"');
-}
-
-/** Escape a string for use inside a TOML basic (single-line) string ("...").
- *  Backslashes, double-quotes, and common control chars are escaped.
- */
-function tomlBasicEscape(s) {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-}
-
 function agentsPage() {
   return {
     tab: 'agents',
@@ -30,6 +15,13 @@ function agentsPage() {
     filterState: 'all',
     loading: true,
     loadError: '',
+    rosterLoading: true,
+    rosterError: '',
+    rosterEntries: [],
+    routeTaskInput: '',
+    routeTaskContext: '',
+    routeTaskResult: null,
+    routingTask: false,
     spawnForm: {
       name: '',
       provider: 'groq',
@@ -219,6 +211,14 @@ function agentsPage() {
 
     get agents() { return Alpine.store('app').agents; },
 
+    get rosterRunningAgents() {
+      return this.rosterEntries.filter(function(entry) { return entry.source === 'running_agent'; });
+    },
+
+    get rosterTemplates() {
+      return this.rosterEntries.filter(function(entry) { return entry.source === 'template'; });
+    },
+
     get filteredAgents() {
       var f = this.filterState;
       if (f === 'all') return this.agents;
@@ -277,7 +277,10 @@ function agentsPage() {
       this.loading = true;
       this.loadError = '';
       try {
-        await Alpine.store('app').refreshAgents();
+        await Promise.all([
+          Alpine.store('app').refreshAgents(),
+          this.loadRoster()
+        ]);
       } catch(e) {
         this.loadError = e.message || 'Could not load agents. Is the daemon running?';
       }
@@ -300,11 +303,64 @@ function agentsPage() {
       this.loading = true;
       this.loadError = '';
       try {
-        await Alpine.store('app').refreshAgents();
+        await Promise.all([
+          Alpine.store('app').refreshAgents(),
+          this.loadRoster()
+        ]);
       } catch(e) {
         this.loadError = e.message || 'Could not load agents.';
       }
       this.loading = false;
+    },
+
+    async loadRoster() {
+      this.rosterLoading = true;
+      this.rosterError = '';
+      try {
+        var data = await OpenFangAPI.get('/api/agency/roster');
+        this.rosterEntries = Array.isArray(data.entries) ? data.entries : [];
+      } catch (e) {
+        this.rosterEntries = [];
+        this.rosterError = e.message || 'Could not load the agent roster.';
+      }
+      this.rosterLoading = false;
+    },
+
+    async routeTask() {
+      var task = (this.routeTaskInput || '').trim();
+      if (!task) {
+        OpenFangToast.warn('Enter a task first');
+        return;
+      }
+      this.routingTask = true;
+      this.routeTaskResult = null;
+      try {
+        this.routeTaskResult = await OpenFangAPI.post('/api/agency/route', {
+          task: task,
+          context: (this.routeTaskContext || '').trim(),
+          dispatch: true
+        });
+      } catch (e) {
+        OpenFangToast.error('Task routing failed: ' + e.message);
+      }
+      this.routingTask = false;
+    },
+
+    rosterActionLabel(entry) {
+      if (!entry) return 'Open';
+      return entry.source === 'running_agent' ? 'Open Chat' : 'Spawn Agent';
+    },
+
+    async activateRosterEntry(entry) {
+      if (!entry) return;
+      if (entry.source === 'running_agent') {
+        var agent = this.agents.find(function(candidate) { return candidate.id === entry.id; });
+        if (agent) {
+          this.chatWithAgent(agent);
+        }
+        return;
+      }
+      await this.spawnFromTemplate(entry.id);
     },
 
     async loadTemplates() {
@@ -426,7 +482,7 @@ function agentsPage() {
       var f = this.spawnForm;
       var si = this.spawnIdentity;
       var lines = [
-        'name = "' + tomlBasicEscape(f.name) + '"',
+        'name = "' + f.name.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"',
         'module = "builtin:chat"'
       ];
       if (f.profile && f.profile !== 'custom') {
@@ -435,7 +491,7 @@ function agentsPage() {
       lines.push('', '[model]');
       lines.push('provider = "' + f.provider + '"');
       lines.push('model = "' + f.model + '"');
-      lines.push('system_prompt = """\n' + tomlMultilineEscape(f.systemPrompt) + '\n"""');
+      lines.push('system_prompt = """\n' + f.systemPrompt.replace(/\\/g, '\\\\').replace(/"""/g, '""\\"') + '\n"""');
       if (f.profile === 'custom') {
         lines.push('', '[capabilities]');
         if (f.caps.memory_read) lines.push('memory_read = ["*"]');
@@ -490,6 +546,7 @@ function agentsPage() {
           this.spawnStep = 1;
           OpenFangToast.success('Agent "' + (res.name || 'new') + '" spawned');
           await Alpine.store('app').refreshAgents();
+          await this.loadRoster();
           this.chatWithAgent({ id: res.agent_id, name: res.name, model_provider: '?', model_name: '?' });
         } else {
           OpenFangToast.error('Spawn failed: ' + (res.error || 'Unknown error'));
@@ -586,6 +643,7 @@ function agentsPage() {
           if (res.agent_id) {
             OpenFangToast.success('Agent "' + (res.name || name) + '" spawned from template');
             await Alpine.store('app').refreshAgents();
+            await this.loadRoster();
             this.chatWithAgent({ id: res.agent_id, name: res.name || name, model_provider: '?', model_name: '?' });
           }
         }
@@ -713,18 +771,19 @@ function agentsPage() {
     },
 
     async spawnBuiltin(t) {
-      var toml = 'name = "' + tomlBasicEscape(t.name) + '"\n';
-      toml += 'description = "' + tomlBasicEscape(t.description) + '"\n';
+      var toml = 'name = "' + t.name + '"\n';
+      toml += 'description = "' + t.description.replace(/"/g, '\\"') + '"\n';
       toml += 'module = "builtin:chat"\n';
       toml += 'profile = "' + t.profile + '"\n\n';
       toml += '[model]\nprovider = "' + t.provider + '"\nmodel = "' + t.model + '"\n';
-      toml += 'system_prompt = """\n' + tomlMultilineEscape(t.system_prompt) + '\n"""\n';
+      toml += 'system_prompt = """\n' + t.system_prompt + '\n"""\n';
 
       try {
         var res = await OpenFangAPI.post('/api/agents', { manifest_toml: toml });
         if (res.agent_id) {
           OpenFangToast.success('Agent "' + t.name + '" spawned');
           await Alpine.store('app').refreshAgents();
+          await this.loadRoster();
           this.chatWithAgent({ id: res.agent_id, name: t.name, model_provider: t.provider, model_name: t.model });
         }
       } catch(e) {

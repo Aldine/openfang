@@ -1,3 +1,4 @@
+// FROZEN: Legacy Alpine SPA. Primary frontend → sdk/javascript/examples/nextjs-app-router/
 // OpenFang App — Alpine.js init, hash router, global store
 'use strict';
 
@@ -87,8 +88,8 @@ function toolIcon(toolName) {
 
 // Alpine.js global store
 document.addEventListener('alpine:init', function() {
-  // Restore saved API key on load
-  var savedKey = localStorage.getItem('openfang-api-key');
+  // Restore saved bearer token on load
+  var savedKey = localStorage.getItem('openfang-auth-token') || localStorage.getItem('openfang-api-key');
   if (savedKey) OpenFangAPI.setAuthToken(savedKey);
 
   Alpine.store('app', {
@@ -104,8 +105,36 @@ document.addEventListener('alpine:init', function() {
     focusMode: localStorage.getItem('openfang-focus') === 'true',
     showOnboarding: false,
     showAuthPrompt: false,
-    authMode: 'apikey',
-    sessionUser: null,
+    authStatus: { required: false, mode: 'open', providers: { api_key: false, jwt: false, github_device_flow: false } },
+    authUser: null,
+    oauthFlow: { provider: 'github', pollId: '', userCode: '', verificationUri: '', interval: 5, polling: false, error: '' },
+
+    saveAuthToken(token) {
+      OpenFangAPI.setAuthToken(token);
+      localStorage.setItem('openfang-auth-token', token);
+      localStorage.removeItem('openfang-api-key');
+    },
+
+    clearStoredAuthToken() {
+      OpenFangAPI.setAuthToken('');
+      localStorage.removeItem('openfang-auth-token');
+      localStorage.removeItem('openfang-api-key');
+      this.authUser = null;
+    },
+
+    async loadAuthStatus() {
+      try {
+        var status = await OpenFangAPI.get('/api/auth/status');
+        this.authStatus = status || this.authStatus;
+        this.authUser = status && status.current_user ? status.current_user : null;
+      } catch (e) {
+        this.authStatus = this.authStatus || { required: false, mode: 'open', providers: {} };
+      }
+    },
+
+    canUseGitHubOAuth() {
+      return !!(this.authStatus && this.authStatus.providers && this.authStatus.providers.github_device_flow);
+    },
 
     toggleFocusMode() {
       this.focusMode = !this.focusMode;
@@ -122,12 +151,16 @@ document.addEventListener('alpine:init', function() {
 
     async checkStatus() {
       try {
-        var s = await OpenFangAPI.get('/api/status');
+        var results = await Promise.all([
+          OpenFangAPI.get('/api/health'),
+          OpenFangAPI.get('/api/version')
+        ]);
+        var health = results[0] || {};
+        var version = results[1] || {};
         this.connected = true;
         this.booting = false;
         this.lastError = '';
-        this.version = s.version || '0.1.0';
-        this.agentCount = s.agent_count || 0;
+        this.version = version.version || health.version || '0.1.0';
       } catch(e) {
         this.connected = false;
         this.lastError = e.message || 'Unknown error';
@@ -156,36 +189,20 @@ document.addEventListener('alpine:init', function() {
     },
 
     async checkAuth() {
+      await this.loadAuthStatus();
       try {
-        // First check if session-based auth is configured
-        var authInfo = await OpenFangAPI.get('/api/auth/check');
-        if (authInfo.mode === 'none') {
-          // No session auth — fall back to API key detection
-          this.authMode = 'apikey';
-          this.sessionUser = null;
-        } else if (authInfo.mode === 'session') {
-          this.authMode = 'session';
-          if (authInfo.authenticated) {
-            this.sessionUser = authInfo.username;
-            this.showAuthPrompt = false;
-            return;
-          }
-          // Session auth enabled but not authenticated — show login prompt
-          this.showAuthPrompt = true;
-          return;
-        }
-      } catch(e) { /* ignore — fall through to API key check */ }
-
-      // API key mode detection
-      try {
+        // Use a protected endpoint (not in the public allowlist) to detect
+        // whether the server requires an API key.
         await OpenFangAPI.get('/api/tools');
+        await this.loadAuthStatus();
         this.showAuthPrompt = false;
       } catch(e) {
         if (e.message && (e.message.indexOf('Not authorized') >= 0 || e.message.indexOf('401') >= 0 || e.message.indexOf('Missing Authorization') >= 0 || e.message.indexOf('Unauthorized') >= 0)) {
-          var saved = localStorage.getItem('openfang-api-key');
+          // Only show prompt if we don't already have a saved key
+          var saved = localStorage.getItem('openfang-auth-token') || localStorage.getItem('openfang-api-key');
           if (saved) {
-            OpenFangAPI.setAuthToken('');
-            localStorage.removeItem('openfang-api-key');
+            // Saved key might be stale — clear it and show prompt
+            this.clearStoredAuthToken();
           }
           this.showAuthPrompt = true;
         }
@@ -194,39 +211,66 @@ document.addEventListener('alpine:init', function() {
 
     submitApiKey(key) {
       if (!key || !key.trim()) return;
-      OpenFangAPI.setAuthToken(key.trim());
-      localStorage.setItem('openfang-api-key', key.trim());
+      this.saveAuthToken(key.trim());
       this.showAuthPrompt = false;
       this.refreshAgents();
-    },
-
-    async sessionLogin(username, password) {
-      try {
-        var result = await OpenFangAPI.post('/api/auth/login', { username: username, password: password });
-        if (result.status === 'ok') {
-          this.sessionUser = result.username;
-          this.showAuthPrompt = false;
-          this.refreshAgents();
-        } else {
-          OpenFangToast.error(result.error || 'Login failed');
-        }
-      } catch(e) {
-        OpenFangToast.error(e.message || 'Login failed');
-      }
-    },
-
-    async sessionLogout() {
-      try {
-        await OpenFangAPI.post('/api/auth/logout');
-      } catch(e) { /* ignore */ }
-      this.sessionUser = null;
-      this.showAuthPrompt = true;
+      this.loadAuthStatus();
     },
 
     clearApiKey() {
-      OpenFangAPI.setAuthToken('');
-      localStorage.removeItem('openfang-api-key');
-    }
+      this.clearStoredAuthToken();
+    },
+
+    async startGitHubOAuth() {
+      this.oauthFlow.error = '';
+      this.oauthFlow.polling = true;
+      OpenFangOAuth.start();
+    },
+
+    // Kept only for legacy call-sites; now driven by OpenFangOAuth CustomEvents below
+    async pollGitHubOAuth() {}
+  });
+
+  // Handle auth-required events dispatched by OpenFangAPI (framework-agnostic)
+  document.addEventListener('openfang:auth-required', function() {
+    var store = Alpine.store('app');
+    if (store && !store.showAuthPrompt) store.showAuthPrompt = true;
+  });
+
+  // Handle GitHub OAuth events dispatched by OpenFangOAuth module
+  document.addEventListener('openfang:oauth-started', function(e) {
+    var store = Alpine.store('app');
+    if (!store) return;
+    store.oauthFlow.userCode = e.detail.userCode;
+    store.oauthFlow.verificationUri = e.detail.verificationUri;
+    store.oauthFlow.polling = true;
+    store.oauthFlow.error = '';
+  });
+
+  document.addEventListener('openfang:oauth-success', async function(e) {
+    var store = Alpine.store('app');
+    if (!store) return;
+    store.saveAuthToken(e.detail.token);
+    store.authUser = e.detail.user || null;
+    store.showAuthPrompt = false;
+    store.oauthFlow = { provider: 'github', pollId: '', userCode: '', verificationUri: '', interval: 5, polling: false, error: '' };
+    await store.loadAuthStatus();
+    await store.refreshAgents();
+    OpenFangToast.success('Signed in with GitHub');
+  });
+
+  document.addEventListener('openfang:oauth-error', function(e) {
+    var store = Alpine.store('app');
+    if (!store) return;
+    store.oauthFlow.polling = false;
+    store.oauthFlow.error = e.detail.message;
+  });
+
+  document.addEventListener('openfang:oauth-expired', function() {
+    var store = Alpine.store('app');
+    if (!store) return;
+    store.oauthFlow.polling = false;
+    store.oauthFlow.error = 'GitHub sign-in expired — please try again';
   });
 });
 
@@ -252,15 +296,19 @@ function app() {
     init() {
       var self = this;
 
+      // Sync theme to <html> on Alpine boot (aligns with inline script in <head>)
+      document.documentElement.setAttribute('data-theme', this.theme);
+
       // Listen for OS theme changes (only matters when mode is 'system')
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e) {
         if (self.themeMode === 'system') {
           self.theme = e.matches ? 'dark' : 'light';
+          document.documentElement.setAttribute('data-theme', self.theme);
         }
       });
 
       // Hash routing
-      var validPages = ['overview','agents','sessions','approvals','comms','workflows','scheduler','channels','skills','hands','analytics','logs','runtime','settings','wizard'];
+      var validPages = ['today','inbox','agent-catalog','overview','agents','sessions','approvals','comms','workflows','scheduler','channels','skills','hands','analytics','logs','runtime','settings','wizard'];
       var pageRedirects = {
         'chat': 'agents',
         'templates': 'agents',
@@ -276,7 +324,7 @@ function app() {
         'approval': 'approvals'
       };
       function handleHash() {
-        var hash = window.location.hash.replace('#', '') || 'agents';
+        var hash = window.location.hash.replace('#', '') || 'today';
         if (pageRedirects[hash]) {
           hash = pageRedirects[hash];
           window.location.hash = hash;
@@ -316,8 +364,11 @@ function app() {
 
       // Initial data load
       this.pollStatus();
-      Alpine.store('app').checkOnboarding();
-      Alpine.store('app').checkAuth();
+      Alpine.store('app').checkAuth().then(function() {
+        if (!Alpine.store('app').showAuthPrompt) {
+          Alpine.store('app').checkOnboarding();
+        }
+      });
       setInterval(function() { self.pollStatus(); }, 5000);
     },
 
@@ -335,6 +386,7 @@ function app() {
       } else {
         this.theme = mode;
       }
+      document.documentElement.setAttribute('data-theme', this.theme);
     },
 
     toggleTheme() {

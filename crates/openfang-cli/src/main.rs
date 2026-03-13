@@ -19,7 +19,7 @@ use openfang_api::server::read_daemon_info;
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::{AgentId, AgentManifest};
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 #[cfg(windows)]
 use std::sync::atomic::Ordering;
@@ -82,7 +82,7 @@ const AFTER_HELP: &str = "\
 
 \x1b[1;36mMore:\x1b[0m
   Docs:       https://github.com/RightNow-AI/openfang
-  Dashboard:  http://127.0.0.1:4200/ (when daemon is running)";
+    Dashboard:  http://127.0.0.1:50051/ (when daemon is running)";
 
 /// OpenFang — the open-source Agent Operating System.
 #[derive(Parser)]
@@ -520,23 +520,6 @@ enum WorkflowCommands {
         /// Path to a JSON file describing the workflow.
         file: PathBuf,
     },
-    /// Get a workflow by ID.
-    Get {
-        /// Workflow ID (UUID).
-        workflow_id: String,
-    },
-    /// Update a workflow from a JSON file.
-    Update {
-        /// Workflow ID (UUID).
-        workflow_id: String,
-        /// Path to a JSON file with the updated workflow definition.
-        file: PathBuf,
-    },
-    /// Delete a workflow by ID.
-    Delete {
-        /// Workflow ID (UUID).
-        workflow_id: String,
-    },
     /// Run a workflow by ID.
     Run {
         /// Workflow ID (UUID).
@@ -910,9 +893,6 @@ fn main() {
         Some(Commands::Workflow(sub)) => match sub {
             WorkflowCommands::List => cmd_workflow_list(),
             WorkflowCommands::Create { file } => cmd_workflow_create(file),
-            WorkflowCommands::Get { workflow_id } => cmd_workflow_get(&workflow_id),
-            WorkflowCommands::Update { workflow_id, file } => cmd_workflow_update(&workflow_id, file),
-            WorkflowCommands::Delete { workflow_id } => cmd_workflow_delete(&workflow_id),
             WorkflowCommands::Run { workflow_id, input } => cmd_workflow_run(&workflow_id, &input),
         },
         Some(Commands::Trigger(sub)) => match sub {
@@ -1093,23 +1073,11 @@ pub(crate) fn find_daemon() -> Option<String> {
 }
 
 /// Build an HTTP client for daemon calls.
-///
-/// When api_key is configured in config.toml, the client automatically
-/// includes a `Authorization: Bearer <key>` header on every request.
-/// When api_key is empty or missing, no auth header is sent.
 pub(crate) fn daemon_client() -> reqwest::blocking::Client {
-    let mut builder = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120));
-
-    if let Some(key) = read_api_key() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {key}")) {
-            headers.insert(reqwest::header::AUTHORIZATION, val);
-        }
-        builder = builder.default_headers(headers);
-    }
-
-    builder.build().expect("Failed to build HTTP client")
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .expect("Failed to build HTTP client")
 }
 
 /// Helper: send a request to the daemon and parse the JSON body.
@@ -1321,18 +1289,10 @@ fn launch_desktop_app(_openfang_dir: &std::path::Path) {
             ui::blank();
             if let Some(base) = find_daemon() {
                 let url = format!("{base}/");
-                if !open_in_browser(&url) {
-                    // Browser launch failed entirely (e.g., sandbox EPERM,
-                    // no display server, container environment).
-                    ui::hint("Could not open a browser automatically.");
-                }
-                // Always print the URL so the user can open it manually,
-                // even when open_in_browser reported success — the spawned
-                // opener may still fail asynchronously.
+                let _ = open_in_browser(&url);
+                // Always print the URL — browser launch may silently fail
+                // (e.g., Chromium sandbox EPERM in containers)
                 ui::hint(&format!("Dashboard: {url}"));
-            } else {
-                ui::hint("Daemon is not running. Start it with: openfang start");
-                ui::hint("Then open: http://127.0.0.1:4200");
             }
         }
     }
@@ -1410,8 +1370,8 @@ fn write_config_if_missing(
             r#"# OpenFang Agent OS configuration
 # See https://github.com/RightNow-AI/openfang for documentation
 
-# For Docker, change to "0.0.0.0:4200" or set OPENFANG_LISTEN env var.
-api_listen = "127.0.0.1:4200"
+# For Docker, change to "0.0.0.0:50051" or set OPENFANG_LISTEN env var.
+api_listen = "127.0.0.1:50051"
 
 [default_model]
 provider = "{provider}"
@@ -1496,37 +1456,27 @@ fn cmd_start(config: Option<PathBuf>) {
 }
 
 /// Read the api_key from ~/.openfang/config.toml (if any).
-///
-/// Returns `None` when the key is missing, empty, or whitespace-only —
-/// meaning the daemon is running in public (unauthenticated) mode.
 fn read_api_key() -> Option<String> {
-    // 1. Config file takes precedence
     let config_path = cli_openfang_home().join("config.toml");
-    if let Ok(text) = std::fs::read_to_string(config_path) {
-        if let Ok(table) = text.parse::<toml::Value>() {
-            if let Some(key) = table.get("api_key").and_then(|v| v.as_str()) {
-                let key = key.trim();
-                if !key.is_empty() {
-                    return Some(key.to_string());
-                }
-            }
-        }
+    let text = std::fs::read_to_string(config_path).ok()?;
+    let table: toml::Value = text.parse().ok()?;
+    let key = table.get("api_key")?.as_str()?;
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
     }
-    // 2. Fall back to OPENFANG_API_KEY env var
-    if let Ok(key) = std::env::var("OPENFANG_API_KEY") {
-        let key = key.trim().to_string();
-        if !key.is_empty() {
-            return Some(key);
-        }
-    }
-    None
 }
 
 fn cmd_stop() {
     match find_daemon() {
         Some(base) => {
             let client = daemon_client();
-            match client.post(format!("{base}/api/shutdown")).send() {
+            let mut req = client.post(format!("{base}/api/shutdown"));
+            if let Some(key) = read_api_key() {
+                req = req.bearer_auth(key);
+            }
+            match req.send() {
                 Ok(r) if r.status().is_success() => {
                     // Wait for daemon to actually stop (up to 5 seconds)
                     for _ in 0..10 {
@@ -2137,8 +2087,8 @@ fn cmd_doctor(json: bool, repair: bool) {
                     r#"# OpenFang Agent OS configuration
 # See https://github.com/RightNow-AI/openfang for documentation
 
-# For Docker, change to "0.0.0.0:4200" or set OPENFANG_LISTEN env var.
-api_listen = "127.0.0.1:4200"
+# For Docker, change to "0.0.0.0:50051" or set OPENFANG_LISTEN env var.
+api_listen = "127.0.0.1:50051"
 
 [default_model]
 provider = "{provider}"
@@ -2175,7 +2125,7 @@ decay_rate = 0.05
         }
 
         // --- Check 4: Port availability ---
-        // Read api_listen from config (default: 127.0.0.1:4200)
+        // Read api_listen from config (default: 127.0.0.1:50051)
         let api_listen = {
             let cfg_path = openfang_dir.join("config.toml");
             if cfg_path.exists() {
@@ -2183,9 +2133,9 @@ decay_rate = 0.05
                     .ok()
                     .and_then(|s| toml::from_str::<openfang_types::config::KernelConfig>(&s).ok())
                     .map(|c| c.api_listen)
-                    .unwrap_or_else(|| "127.0.0.1:4200".to_string())
+                    .unwrap_or_else(|| "127.0.0.1:50051".to_string())
             } else {
-                "127.0.0.1:4200".to_string()
+                "127.0.0.1:50051".to_string()
             }
         };
         if !json {
@@ -3013,31 +2963,16 @@ pub(crate) fn open_in_browser(url: &str) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        // Try multiple openers in order. xdg-open is the standard, but it
-        // (or the browser it launches) can fail with EPERM in sandboxed
-        // environments (containers, Snap, Flatpak, user-namespace
-        // restrictions). Fall through to alternatives if any opener fails.
-        let openers = [
-            "xdg-open",
-            "sensible-browser",
-            "x-www-browser",
-            "firefox",
-            "google-chrome",
-            "chromium",
-            "chromium-browser",
-        ];
-        for opener in &openers {
-            let result = std::process::Command::new(opener)
-                .arg(url)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            if result.is_ok() {
-                return true;
-            }
-        }
-        false
+        // Detach from parent to avoid inheriting sandbox restrictions.
+        // Some Chromium-based browsers fail with EPERM when launched from
+        // restricted environments (containers, snaps, flatpaks).
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok()
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
@@ -3136,100 +3071,6 @@ fn cmd_workflow_run(workflow_id: &str, input: &str) {
     } else {
         eprintln!(
             "Workflow failed: {}",
-            body["error"].as_str().unwrap_or("Unknown error")
-        );
-        std::process::exit(1);
-    }
-}
-
-fn cmd_workflow_get(workflow_id: &str) {
-    let base = require_daemon("workflow get");
-    let client = daemon_client();
-    let body = daemon_json(client.get(format!("{base}/api/workflows/{workflow_id}")).send());
-
-    if body.get("error").is_some() {
-        eprintln!(
-            "Workflow not found: {}",
-            body["error"].as_str().unwrap_or("Unknown error")
-        );
-        std::process::exit(1);
-    }
-
-    println!("Workflow: {}", body["name"].as_str().unwrap_or("?"));
-    println!("  ID:          {}", body["id"].as_str().unwrap_or("?"));
-    println!(
-        "  Description: {}",
-        body["description"].as_str().unwrap_or("")
-    );
-    println!(
-        "  Created:     {}",
-        body["created_at"].as_str().unwrap_or("?")
-    );
-
-    if let Some(steps) = body["steps"].as_array() {
-        println!("  Steps ({}):", steps.len());
-        for (i, s) in steps.iter().enumerate() {
-            let name = s["name"].as_str().unwrap_or("step");
-            let agent = s["agent"]
-                .get("name")
-                .or_else(|| s["agent"].get("id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            println!("    #{}: {} -> {}", i + 1, name, agent);
-        }
-    }
-}
-
-fn cmd_workflow_update(workflow_id: &str, file: PathBuf) {
-    let base = require_daemon("workflow update");
-    if !file.exists() {
-        eprintln!("Workflow file not found: {}", file.display());
-        std::process::exit(1);
-    }
-    let contents = std::fs::read_to_string(&file).unwrap_or_else(|e| {
-        eprintln!("Error reading workflow file: {e}");
-        std::process::exit(1);
-    });
-    let json_body: serde_json::Value = serde_json::from_str(&contents).unwrap_or_else(|e| {
-        eprintln!("Invalid JSON: {e}");
-        std::process::exit(1);
-    });
-
-    let client = daemon_client();
-    let body = daemon_json(
-        client
-            .put(format!("{base}/api/workflows/{workflow_id}"))
-            .json(&json_body)
-            .send(),
-    );
-
-    if body["status"].as_str() == Some("updated") {
-        println!("Workflow updated successfully!");
-        println!("  ID: {}", body["workflow_id"].as_str().unwrap_or("?"));
-    } else {
-        eprintln!(
-            "Failed to update workflow: {}",
-            body["error"].as_str().unwrap_or("Unknown error")
-        );
-        std::process::exit(1);
-    }
-}
-
-fn cmd_workflow_delete(workflow_id: &str) {
-    let base = require_daemon("workflow delete");
-    let client = daemon_client();
-    let body = daemon_json(
-        client
-            .delete(format!("{base}/api/workflows/{workflow_id}"))
-            .send(),
-    );
-
-    if body["status"].as_str() == Some("removed") {
-        println!("Workflow deleted successfully!");
-        println!("  ID: {}", body["workflow_id"].as_str().unwrap_or("?"));
-    } else {
-        eprintln!(
-            "Failed to delete workflow: {}",
             body["error"].as_str().unwrap_or("Unknown error")
         );
         std::process::exit(1);
@@ -3425,53 +3266,32 @@ fn cmd_skill_install(source: &str) {
 
     let source_path = PathBuf::from(source);
     if source_path.exists() && source_path.is_dir() {
-        // Local directory install
-        let manifest_path = source_path.join("skill.toml");
-        if !manifest_path.exists() {
-            // Check if it's an OpenClaw skill
-            if openfang_skills::openclaw_compat::detect_openclaw_skill(&source_path) {
-                println!("Detected OpenClaw skill format. Converting...");
-                match openfang_skills::openclaw_compat::convert_openclaw_skill(&source_path) {
-                    Ok(manifest) => {
-                        let dest = skills_dir.join(&manifest.skill.name);
-                        // Copy skill directory
-                        copy_dir_recursive(&source_path, &dest);
-                        if let Err(e) = openfang_skills::openclaw_compat::write_openfang_manifest(
-                            &dest, &manifest,
-                        ) {
-                            eprintln!("Failed to write manifest: {e}");
-                            std::process::exit(1);
-                        }
-                        println!("Installed OpenClaw skill: {}", manifest.skill.name);
-                    }
+        match detect_local_skill_source(&source_path) {
+            Some(LocalSkillSource::Single(skill_dir)) => {
+                if let Err(e) = install_local_skill_dir(&skill_dir, &skills_dir) {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+            Some(LocalSkillSource::Collection(collection_dir)) => {
+                match install_local_skill_collection(&collection_dir, &skills_dir) {
+                    Ok(count) => println!(
+                        "Installed {count} skill(s) from {}",
+                        collection_dir.display()
+                    ),
                     Err(e) => {
-                        eprintln!("Failed to convert OpenClaw skill: {e}");
+                        eprintln!("{e}");
                         std::process::exit(1);
                     }
                 }
-                return;
             }
-            eprintln!("No skill.toml found in {source}");
-            std::process::exit(1);
-        }
-
-        // Read manifest to get skill name
-        let toml_str = std::fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
-            eprintln!("Error reading skill.toml: {e}");
-            std::process::exit(1);
-        });
-        let manifest: openfang_skills::SkillManifest =
-            toml::from_str(&toml_str).unwrap_or_else(|e| {
-                eprintln!("Error parsing skill.toml: {e}");
+            None => {
+                eprintln!(
+                    "No installable skill found in {source}. Expected a skill.toml, SKILL.md, OpenClaw skill, or a directory containing skill subfolders."
+                );
                 std::process::exit(1);
-            });
-
-        let dest = skills_dir.join(&manifest.skill.name);
-        copy_dir_recursive(&source_path, &dest);
-        println!(
-            "Installed skill: {} v{}",
-            manifest.skill.name, manifest.skill.version
-        );
+            }
+        }
     } else {
         // Remote install from FangHub
         println!("Installing {source} from FangHub...");
@@ -3487,6 +3307,118 @@ fn cmd_skill_install(source: &str) {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalSkillSource {
+    Single(PathBuf),
+    Collection(PathBuf),
+}
+
+fn detect_local_skill_source(source_path: &Path) -> Option<LocalSkillSource> {
+    if is_installable_skill_dir(source_path) {
+        return Some(LocalSkillSource::Single(source_path.to_path_buf()));
+    }
+
+    if contains_installable_skill_children(source_path) {
+        return Some(LocalSkillSource::Collection(source_path.to_path_buf()));
+    }
+
+    let nested_skills = source_path.join("skills");
+    if nested_skills.is_dir() && contains_installable_skill_children(&nested_skills) {
+        return Some(LocalSkillSource::Collection(nested_skills));
+    }
+
+    None
+}
+
+fn is_installable_skill_dir(dir: &Path) -> bool {
+    dir.join("skill.toml").exists()
+        || openfang_skills::openclaw_compat::detect_skillmd(dir)
+        || openfang_skills::openclaw_compat::detect_openclaw_skill(dir)
+}
+
+fn contains_installable_skill_children(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .any(|path| path.is_dir() && is_installable_skill_dir(&path))
+}
+
+fn install_local_skill_collection(collection_dir: &Path, skills_dir: &Path) -> Result<usize, String> {
+    let mut installed = 0usize;
+    let entries = std::fs::read_dir(collection_dir)
+        .map_err(|e| format!("Error reading {}: {e}", collection_dir.display()))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !is_installable_skill_dir(&path) {
+            continue;
+        }
+        install_local_skill_dir(&path, skills_dir)?;
+        installed += 1;
+    }
+
+    if installed == 0 {
+        return Err(format!(
+            "No installable skills found in {}",
+            collection_dir.display()
+        ));
+    }
+
+    Ok(installed)
+}
+
+fn install_local_skill_dir(source_path: &Path, skills_dir: &Path) -> Result<(), String> {
+    let manifest_path = source_path.join("skill.toml");
+    if manifest_path.exists() {
+        let toml_str = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| format!("Error reading skill.toml: {e}"))?;
+        let manifest: openfang_skills::SkillManifest =
+            toml::from_str(&toml_str).map_err(|e| format!("Error parsing skill.toml: {e}"))?;
+
+        let dest = skills_dir.join(&manifest.skill.name);
+        copy_dir_recursive(source_path, &dest);
+        println!(
+            "Installed skill: {} v{}",
+            manifest.skill.name, manifest.skill.version
+        );
+        return Ok(());
+    }
+
+    if openfang_skills::openclaw_compat::detect_skillmd(source_path) {
+        println!("Detected SKILL.md prompt skill format. Converting...");
+        let converted = openfang_skills::openclaw_compat::convert_skillmd(source_path)
+            .map_err(|e| format!("Failed to convert SKILL.md skill: {e}"))?;
+        let dest = skills_dir.join(&converted.manifest.skill.name);
+        copy_dir_recursive(source_path, &dest);
+        openfang_skills::openclaw_compat::write_openfang_manifest(&dest, &converted.manifest)
+            .map_err(|e| format!("Failed to write manifest: {e}"))?;
+        openfang_skills::openclaw_compat::write_prompt_context(&dest, &converted.prompt_context)
+            .map_err(|e| format!("Failed to write prompt context: {e}"))?;
+        println!("Installed SKILL.md skill: {}", converted.manifest.skill.name);
+        return Ok(());
+    }
+
+    if openfang_skills::openclaw_compat::detect_openclaw_skill(source_path) {
+        println!("Detected OpenClaw skill format. Converting...");
+        let manifest = openfang_skills::openclaw_compat::convert_openclaw_skill(source_path)
+            .map_err(|e| format!("Failed to convert OpenClaw skill: {e}"))?;
+        let dest = skills_dir.join(&manifest.skill.name);
+        copy_dir_recursive(source_path, &dest);
+        openfang_skills::openclaw_compat::write_openfang_manifest(&dest, &manifest)
+            .map_err(|e| format!("Failed to write manifest: {e}"))?;
+        println!("Installed OpenClaw skill: {}", manifest.skill.name);
+        return Ok(());
+    }
+
+    Err(format!(
+        "No installable skill found in {}",
+        source_path.display()
+    ))
 }
 
 fn cmd_skill_list() {
@@ -4858,7 +4790,7 @@ fn prompt_input(prompt: &str) -> String {
     line.trim().to_string()
 }
 
-pub(crate) fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) {
+pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap();
     if let Ok(entries) = std::fs::read_dir(src) {
         for entry in entries.flatten() {
@@ -6596,8 +6528,54 @@ fn remove_self_binary(exe_path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
+    use super::{contains_installable_skill_children, detect_local_skill_source, LocalSkillSource};
 
     // --- Doctor command unit tests ---
+
+    #[test]
+    fn test_detect_local_skill_source_supports_skillmd_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "openfang-skill-install-test-{}",
+            std::process::id()
+        ));
+        let skill_dir = root.join("brainstorming");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: brainstorming\ndescription: test\n---\n# Prompt",
+        )
+        .unwrap();
+
+        let detected = detect_local_skill_source(&skill_dir);
+        assert_eq!(detected, Some(LocalSkillSource::Single(skill_dir.clone())));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_detect_local_skill_source_supports_skill_collections() {
+        let root = std::env::temp_dir().join(format!(
+            "openfang-skill-collection-test-{}",
+            std::process::id()
+        ));
+        let repo_dir = root.join("superpowers");
+        let skills_dir = repo_dir.join("skills");
+        let skill_dir = skills_dir.join("systematic-debugging");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: systematic-debugging\ndescription: test\n---\n# Prompt",
+        )
+        .unwrap();
+
+        assert!(contains_installable_skill_children(&skills_dir));
+        let detected = detect_local_skill_source(&repo_dir);
+        assert_eq!(detected, Some(LocalSkillSource::Collection(skills_dir)));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn test_doctor_skill_registry_loads_bundled() {
@@ -6630,7 +6608,7 @@ mod tests {
     #[test]
     fn test_doctor_config_include_field() {
         let config_toml = r#"
-api_listen = "127.0.0.1:4200"
+api_listen = "127.0.0.1:50051"
 include = ["providers.toml", "agents.toml"]
 
 [default_model]
@@ -6647,7 +6625,7 @@ api_key_env = "GROQ_API_KEY"
     #[test]
     fn test_doctor_exec_policy_field() {
         let config_toml = r#"
-api_listen = "127.0.0.1:4200"
+api_listen = "127.0.0.1:50051"
 
 [exec_policy]
 mode = "allowlist"
@@ -6671,7 +6649,7 @@ api_key_env = "GROQ_API_KEY"
     #[test]
     fn test_doctor_mcp_transport_validation() {
         let config_toml = r#"
-api_listen = "127.0.0.1:4200"
+api_listen = "127.0.0.1:50051"
 
 [default_model]
 provider = "groq"

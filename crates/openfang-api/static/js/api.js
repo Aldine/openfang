@@ -118,7 +118,7 @@ var OpenFangToast = (function() {
 // ── Friendly Error Messages ──
 function friendlyError(status, serverMsg) {
   if (status === 0 || !status) return 'Cannot reach daemon — is openfang running?';
-  if (status === 401) return 'Not authorized — check your API key';
+  if (status === 401) return 'Not authorized — check your API key or sign-in token';
   if (status === 403) return 'Permission denied';
   if (status === 404) return serverMsg || 'Resource not found';
   if (status === 429) return 'Rate limited — slow down and try again';
@@ -161,16 +161,12 @@ var OpenFangAPI = (function() {
     return fetch(BASE + path, opts).then(function(r) {
       if (_connectionState !== 'connected') setConnectionState('connected');
       if (!r.ok) {
-        // On 401, auto-show auth prompt so the user can re-enter their key
-        if (r.status === 401 && typeof Alpine !== 'undefined') {
-          try {
-            var store = Alpine.store('app');
-            if (store && !store.showAuthPrompt) {
-              _authToken = '';
-              localStorage.removeItem('openfang-api-key');
-              store.showAuthPrompt = true;
-            }
-          } catch(e2) { /* ignore Alpine errors */ }
+        // On 401, clear credentials and fire a framework-agnostic custom event
+        if (r.status === 401) {
+          _authToken = '';
+          localStorage.removeItem('openfang-auth-token');
+          localStorage.removeItem('openfang-api-key');
+          document.dispatchEvent(new CustomEvent('openfang:auth-required'));
         }
         return r.text().then(function(text) {
           var msg = '';
@@ -203,94 +199,17 @@ var OpenFangAPI = (function() {
   function patch(path, body) { return request('PATCH', path, body); }
   function del(path) { return request('DELETE', path); }
 
-  // WebSocket manager with auto-reconnect
-  var _ws = null;
-  var _wsCallbacks = {};
-  var _wsConnected = false;
-  var _wsAgentId = null;
-  var _reconnectTimer = null;
-  var _reconnectAttempts = 0;
-  var MAX_RECONNECT = 5;
-
+  // WebSocket manager — delegates to OpenFangConnection module
   function wsConnect(agentId, callbacks) {
-    wsDisconnect();
-    _wsCallbacks = callbacks || {};
-    _wsAgentId = agentId;
-    _reconnectAttempts = 0;
-    _doConnect(agentId);
+    OpenFangConnection.connect(agentId, callbacks, {
+      getBaseUrl: function() { return BASE.replace(/^http/, 'ws'); },
+      getToken: function() { return _authToken; }
+    });
   }
 
-  function _doConnect(agentId) {
-    try {
-      var url = WS_BASE + '/api/agents/' + agentId + '/ws';
-      if (_authToken) url += '?token=' + encodeURIComponent(_authToken);
-      _ws = new WebSocket(url);
-
-      _ws.onopen = function() {
-        _wsConnected = true;
-        _reconnectAttempts = 0;
-        setConnectionState('connected');
-        if (_reconnectAttempt > 0) {
-          OpenFangToast.success('Reconnected');
-          _reconnectAttempt = 0;
-        }
-        if (_wsCallbacks.onOpen) _wsCallbacks.onOpen();
-      };
-
-      _ws.onmessage = function(e) {
-        try {
-          var data = JSON.parse(e.data);
-          if (_wsCallbacks.onMessage) _wsCallbacks.onMessage(data);
-        } catch(err) { /* ignore parse errors */ }
-      };
-
-      _ws.onclose = function(e) {
-        _wsConnected = false;
-        _ws = null;
-        if (_wsAgentId && _reconnectAttempts < MAX_RECONNECT && e.code !== 1000) {
-          _reconnectAttempts++;
-          _reconnectAttempt = _reconnectAttempts;
-          setConnectionState('reconnecting');
-          if (_reconnectAttempts === 1) {
-            OpenFangToast.warn('Connection lost, reconnecting...');
-          }
-          var delay = Math.min(1000 * Math.pow(2, _reconnectAttempts - 1), 10000);
-          _reconnectTimer = setTimeout(function() { _doConnect(_wsAgentId); }, delay);
-          return;
-        }
-        if (_wsAgentId && _reconnectAttempts >= MAX_RECONNECT) {
-          setConnectionState('disconnected');
-          OpenFangToast.error('Connection lost — switched to HTTP mode', 0);
-        }
-        if (_wsCallbacks.onClose) _wsCallbacks.onClose();
-      };
-
-      _ws.onerror = function() {
-        _wsConnected = false;
-        if (_wsCallbacks.onError) _wsCallbacks.onError();
-      };
-    } catch(e) {
-      _wsConnected = false;
-    }
-  }
-
-  function wsDisconnect() {
-    _wsAgentId = null;
-    _reconnectAttempts = MAX_RECONNECT;
-    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
-    if (_ws) { _ws.close(1000); _ws = null; }
-    _wsConnected = false;
-  }
-
-  function wsSend(data) {
-    if (_ws && _ws.readyState === WebSocket.OPEN) {
-      _ws.send(JSON.stringify(data));
-      return true;
-    }
-    return false;
-  }
-
-  function isWsConnected() { return _wsConnected; }
+  function wsDisconnect() { OpenFangConnection.disconnect(); }
+  function wsSend(data) { return OpenFangConnection.send(data); }
+  function isWsConnected() { return OpenFangConnection.isConnected(); }
 
   function getConnectionState() { return _connectionState; }
 

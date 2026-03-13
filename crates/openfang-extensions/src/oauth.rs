@@ -375,6 +375,7 @@ mod tests {
             github_client_id: None,
             microsoft_client_id: Some("my-msft-id".into()),
             slack_client_id: None,
+            ..Default::default()
         };
         let ids = resolve_client_ids(&config);
         assert_eq!(ids["google"], "my-real-google-id");

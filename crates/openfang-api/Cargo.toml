@@ -10,6 +10,7 @@ openfang-types = { path = "../openfang-types" }
 openfang-kernel = { path = "../openfang-kernel" }
 openfang-runtime = { path = "../openfang-runtime" }
 openfang-memory = { path = "../openfang-memory" }
+openfang-orchestrator = { path = "../openfang-orchestrator" }
 openfang-channels = { path = "../openfang-channels" }
 openfang-wire = { path = "../openfang-wire" }
 openfang-skills = { path = "../openfang-skills" }
@@ -32,10 +33,8 @@ futures = { workspace = true }
 governor = { workspace = true }
 tokio-stream = { workspace = true }
 subtle = { workspace = true }
+jsonwebtoken = { workspace = true }
 base64 = { workspace = true }
-sha2 = { workspace = true }
-hmac = { workspace = true }
-hex = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
 

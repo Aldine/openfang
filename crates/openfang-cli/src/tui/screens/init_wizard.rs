@@ -189,14 +189,6 @@ const PROVIDERS: &[ProviderInfo] = &[
         hint: "",
     },
     ProviderInfo {
-        name: "claude-code",
-        display: "Claude Code",
-        env_var: "",
-        default_model: "claude-code/sonnet",
-        needs_key: false,
-        hint: "no API key",
-    },
-    ProviderInfo {
         name: "ollama",
         display: "Ollama",
         env_var: "OLLAMA_API_KEY",
@@ -391,23 +383,15 @@ impl State {
         self.provider_order.clear();
         let gemini_via_google = std::env::var("GOOGLE_API_KEY").is_ok();
         for (i, p) in PROVIDERS.iter().enumerate() {
-            let detected = if p.name == "claude-code" {
-                openfang_runtime::drivers::claude_code::claude_code_available()
-            } else {
-                (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
-                    || (p.name == "gemini" && gemini_via_google)
-            };
+            let detected =
+                std::env::var(p.env_var).is_ok() || (p.name == "gemini" && gemini_via_google);
             if detected {
                 self.provider_order.push(i);
             }
         }
         for (i, p) in PROVIDERS.iter().enumerate() {
-            let detected = if p.name == "claude-code" {
-                openfang_runtime::drivers::claude_code::claude_code_available()
-            } else {
-                (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
-                    || (p.name == "gemini" && gemini_via_google)
-            };
+            let detected =
+                std::env::var(p.env_var).is_ok() || (p.name == "gemini" && gemini_via_google);
             if !detected {
                 self.provider_order.push(i);
             }
@@ -446,10 +430,7 @@ impl State {
 
     fn is_provider_detected(&self, prov_idx: usize) -> bool {
         let p = &PROVIDERS[prov_idx];
-        if p.name == "claude-code" {
-            return openfang_runtime::drivers::claude_code::claude_code_available();
-        }
-        (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
+        std::env::var(p.env_var).is_ok()
             || (p.name == "gemini" && std::env::var("GOOGLE_API_KEY").is_ok())
     }
 
@@ -1110,27 +1091,22 @@ complex_threshold = 500
     };
 
     let config_path = openfang_dir.join("config.toml");
-    let api_key_line = if p.env_var.is_empty() {
-        String::new()
-    } else {
-        format!("api_key_env = \"{}\"", p.env_var)
-    };
-
     let config = format!(
         r#"# OpenFang Agent OS configuration
 # See https://github.com/RightNow-AI/openfang for documentation
 
-api_listen = "127.0.0.1:4200"
+api_listen = "127.0.0.1:50051"
 
 [default_model]
 provider = "{provider}"
 model = "{model}"
-{api_key_line}
+api_key_env = "{env_var}"
 
 [memory]
 decay_rate = 0.05
 {routing_section}"#,
         provider = p.name,
+        env_var = p.env_var,
     );
 
     match std::fs::write(&config_path, &config) {
@@ -1727,13 +1703,7 @@ fn draw_provider(f: &mut Frame, area: Rect, state: &mut State) {
                 Span::styled("  ", Style::default())
             };
             let name_span = Span::raw(format!("{:<14}", p.display));
-            let hint_text = if p.name == "claude-code" {
-                if detected {
-                    "CLI detected".to_string()
-                } else {
-                    "no API key needed".to_string()
-                }
-            } else if detected {
+            let hint_text = if detected {
                 format!("{} detected", p.env_var)
             } else if !p.needs_key {
                 "local, no key needed".to_string()

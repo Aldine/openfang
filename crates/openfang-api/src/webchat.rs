@@ -46,29 +46,48 @@ pub async fn favicon_ico() -> impl IntoResponse {
     )
 }
 
-/// GET / — Serve the OpenFang Dashboard single-page application.
+/// GET / — Redirect to the primary Next.js frontend.
 ///
-/// Returns the full SPA with ETag header based on package version for caching.
-pub async fn webchat_page() -> impl IntoResponse {
-    (
-        [
-            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::ETAG, ETAG),
-            (
-                header::CACHE_CONTROL,
-                "public, max-age=3600, must-revalidate",
-            ),
-        ],
-        WEBCHAT_HTML,
-    )
+/// **Primary frontend:** `sdk/javascript/examples/nextjs-app-router/` (port 3002)
+///
+/// This endpoint now redirects browsers to Next.js by default.
+/// The legacy Alpine SPA is preserved for emergency fallback only.
+///
+/// ## Environment variables
+/// - `OPENFANG_DASHBOARD_URL`: redirect target (default: `http://localhost:3002`)
+/// - `OPENFANG_LEGACY_UI=1`: serve the legacy Alpine SPA instead of redirecting
+pub async fn webchat_page() -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+
+    // Emergency fallback: set OPENFANG_LEGACY_UI=1 to bypass redirect and serve Alpine.
+    if std::env::var("OPENFANG_LEGACY_UI").as_deref() == Ok("1") {
+        return (
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::ETAG, ETAG),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            WEBCHAT_HTML,
+        )
+        .into_response();
+    }
+
+    // Redirect to the primary Next.js frontend.
+    let url = std::env::var("OPENFANG_DASHBOARD_URL")
+        .unwrap_or_else(|_| "http://localhost:3002".to_string());
+    axum::response::Redirect::temporary(&url).into_response()
 }
 
-/// The embedded HTML/CSS/JS for the OpenFang Dashboard.
+/// LEGACY: Alpine.js SPA — pending migration to Next.js (sdk/javascript/examples/nextjs-app-router/).
 ///
 /// Assembled at compile time from organized static files.
 /// All vendor libraries (Alpine.js, marked.js, highlight.js) are bundled
 /// locally — no CDN dependency. Alpine.js is included LAST because it
 /// immediately processes x-data directives and fires alpine:init on load.
+///
+/// DO NOT apply CSS/JS patches here without a confirmed live repro.
+/// Changes require a fresh `cargo build -p openfang-cli` to deploy.
+/// Verify with: `curl -s http://127.0.0.1:50051/ | Select-String "your-pattern"`
 const WEBCHAT_HTML: &str = concat!(
     include_str!("../static/index_head.html"),
     "<style>\n",
@@ -81,21 +100,34 @@ const WEBCHAT_HTML: &str = concat!(
     include_str!("../static/vendor/github-dark.min.css"),
     "\n</style>\n",
     include_str!("../static/index_body.html"),
-    // Vendor libs: marked + highlight first (used by app.js), then Chart.js
+    // Vendor libs: marked + highlight first (used by app.js)
     "<script>\n",
     include_str!("../static/vendor/marked.min.js"),
     "\n</script>\n",
     "<script>\n",
     include_str!("../static/vendor/highlight.min.js"),
     "\n</script>\n",
-    "<script>\n",
-    include_str!("../static/vendor/chart.umd.min.js"),
-    "\n</script>\n",
     // App code
     "<script>\n",
+    include_str!("../static/js/connection.js"),
+    "\n",
+    include_str!("../static/js/auth-oauth.js"),
+    "\n",
     include_str!("../static/js/api.js"),
     "\n",
+    include_str!("../static/js/fallback-policy.js"),
+    "\n",
+    include_str!("../static/js/ollama-adapter.js"),
+    "\n",
+    include_str!("../static/js/local-orchestration.js"),
+    "\n",
     include_str!("../static/js/app.js"),
+    "\n",
+    include_str!("../static/js/pages/today.js"),
+    "\n",
+    include_str!("../static/js/pages/inbox.js"),
+    "\n",
+    include_str!("../static/js/pages/agent-catalog.js"),
     "\n",
     include_str!("../static/js/pages/overview.js"),
     "\n",

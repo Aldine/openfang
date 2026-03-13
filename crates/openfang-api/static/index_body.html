@@ -1,28 +1,28 @@
-<body x-data="app" :data-theme="theme">
+<!-- FROZEN: Legacy Alpine SPA body. Primary frontend → sdk/javascript/examples/nextjs-app-router/ -->
+<body x-data="app">
 
-<!-- Auth Prompt (API Key or Username/Password) -->
-<div x-show="$store.app.showAuthPrompt" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px)" x-data="{ apiKeyInput: '', loginUser: '', loginPass: '' }">
-  <div style="background:var(--bg-card,#1e1e2e);border:1px solid var(--border,#333);border-radius:12px;padding:2rem;max-width:400px;width:90%">
-    <!-- Session login mode -->
-    <template x-if="$store.app.authMode === 'session'">
-      <div>
-        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">Sign In</h3>
-        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 1rem">Enter your dashboard credentials.</p>
-        <input type="text" x-model="loginUser" placeholder="Username" autocomplete="username" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.5rem">
-        <input type="password" x-model="loginPass" placeholder="Password" autocomplete="current-password" @keydown.enter="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
-        <button @click="$store.app.sessionLogin(loginUser, loginPass)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Sign In</button>
+<!-- API Key Auth Prompt -->
+<div x-cloak x-show="$store.app.showAuthPrompt" class="auth-prompt-overlay" x-data="{ apiKeyInput: '' }">
+  <div class="auth-prompt-card">
+    <h3 class="auth-prompt-title">Sign in required</h3>
+    <p class="auth-prompt-copy">This instance requires a bearer token. Use the local API key or sign in with GitHub.</p>
+    <p class="auth-prompt-hint" x-show="$store.app.authStatus.providers && $store.app.authStatus.providers.api_key">Add <code class="auth-inline-code">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
+    <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" class="form-input auth-prompt-input">
+    <button @click="$store.app.submitApiKey(apiKeyInput)" class="btn btn-primary btn-block auth-prompt-button">Unlock Dashboard</button>
+    <div x-show="$store.app.canUseGitHubOAuth()" style="margin-top:12px;display:flex;flex-direction:column;gap:10px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="flex:1;height:1px;background:var(--border);"></div>
+        <span class="text-xs" style="color:var(--text-muted);letter-spacing:.08em;text-transform:uppercase;">or</span>
+        <div style="flex:1;height:1px;background:var(--border);"></div>
       </div>
-    </template>
-    <!-- API key mode -->
-    <template x-if="$store.app.authMode === 'apikey'">
-      <div>
-        <h3 style="margin:0 0 0.5rem;font-size:1.1rem">API Key Required</h3>
-        <p style="color:var(--text-dim,#888);font-size:0.85rem;margin:0 0 0.5rem">This instance requires an API key. Enter the key from your <code>config.toml</code>.</p>
-        <p style="color:var(--text-dim,#666);font-size:0.75rem;margin:0 0 1rem">Add <code style="color:var(--accent-light,#a78bfa);background:var(--bg,#111);padding:1px 4px;border-radius:2px">api_key = "your-key"</code> at the <strong>top</strong> of <code>~/.openfang/config.toml</code> (not under any [section]).</p>
-        <input type="password" x-model="apiKeyInput" placeholder="Enter API key..." @keydown.enter="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-input,#151520);color:var(--text,#e0e0e0);font-size:0.9rem;box-sizing:border-box;margin-bottom:0.75rem">
-        <button @click="$store.app.submitApiKey(apiKeyInput)" style="width:100%;padding:0.6rem;border-radius:6px;border:none;background:var(--accent,#7c3aed);color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem">Unlock Dashboard</button>
+      <button @click="$store.app.startGitHubOAuth()" class="btn btn-secondary btn-block" :disabled="$store.app.oauthFlow.polling">Sign in with GitHub</button>
+      <div x-show="$store.app.oauthFlow.userCode" class="auth-prompt-hint">
+        <div>Visit <a :href="$store.app.oauthFlow.verificationUri" target="_blank" x-text="$store.app.oauthFlow.verificationUri"></a> and enter:</div>
+        <div style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:8px 0;color:var(--accent-light);" x-text="$store.app.oauthFlow.userCode"></div>
+        <div x-show="$store.app.oauthFlow.polling">Waiting for GitHub authorization…</div>
       </div>
-    </template>
+      <div x-show="$store.app.oauthFlow.error" class="text-sm" style="color:var(--danger);" x-text="$store.app.oauthFlow.error"></div>
+    </div>
   </div>
 </div>
 
@@ -34,8 +34,9 @@
         <div class="sidebar-logo">
           <img src="/logo.png" alt="OpenFang" width="28" height="28">
           <div>
-            <h1>OPENFANG</h1>
+            <h1>OpenFang</h1>
             <div class="version" x-text="'v' + version"></div>
+            <div class="sidebar-tagline">Agent workspace</div>
           </div>
         </div>
       </div>
@@ -56,6 +57,30 @@
     </div>
 
     <div class="sidebar-nav" role="navigation" aria-label="Main navigation">
+      <!-- Planner -->
+      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Planner">
+        <div class="nav-section-title" @click="collapsed = !collapsed">
+          <span class="nav-label">Planner</span>
+          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
+        </div>
+        <template x-if="!collapsed">
+          <div x-transition>
+            <a class="nav-item" :class="{ active: page === 'today' }" @click="navigate('today')" :aria-current="page === 'today' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="M8 14h3"/><path d="M8 18h8"/></svg></span>
+              <span class="nav-label">Today</span>
+            </a>
+            <a class="nav-item" :class="{ active: page === 'inbox' }" @click="navigate('inbox')" :aria-current="page === 'inbox' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 5-6-10-3 5H2"/></svg></span>
+              <span class="nav-label">Inbox</span>
+            </a>
+            <a class="nav-item" :class="{ active: page === 'agent-catalog' }" @click="navigate('agent-catalog')" :aria-current="page === 'agent-catalog' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5Z"/><path d="M3 21a9 9 0 0 1 18 0"/></svg></span>
+              <span class="nav-label">Agent Catalog</span>
+            </a>
+          </div>
+        </template>
+      </div>
+
       <!-- Chat — primary action -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Chat">
         <div class="nav-section-title" @click="collapsed = !collapsed">
@@ -186,11 +211,10 @@
     </div>
 
     <div class="sidebar-footer">
-      <div x-show="$store.app.sessionUser" style="padding:4px 16px;display:flex;align-items:center;justify-content:space-between">
-        <span class="text-xs text-dim" x-text="$store.app.sessionUser" style="letter-spacing:0.5px"></span>
-        <button @click="$store.app.sessionLogout()" class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px;opacity:0.7" title="Sign out">Logout</button>
+      <div class="sidebar-footer-card">
+        <div class="sidebar-footer-title sidebar-label">Quick actions</div>
+        <div class="sidebar-footer-copy sidebar-label">Ctrl+K agents · Ctrl+N new</div>
       </div>
-      <div class="sidebar-label text-xs text-dim" style="padding:0 16px 4px;letter-spacing:0.5px">Ctrl+K agents | Ctrl+N new</div>
     </div>
     <div class="sidebar-toggle" @click="toggleSidebar()" x-text="sidebarCollapsed ? '\u276F' : '\u276E'"></div>
   </nav>
@@ -200,9 +224,268 @@
   <!-- Main Content -->
   <main class="main-content">
     <!-- Mobile menu button -->
-    <button class="mobile-menu-btn btn btn-ghost" @click="mobileMenuOpen = !mobileMenuOpen" style="position:fixed;top:8px;left:8px;z-index:98;padding:6px 10px">
+    <button class="mobile-menu-btn btn btn-ghost" @click="mobileMenuOpen = !mobileMenuOpen" title="Toggle navigation" aria-label="Toggle navigation">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
+
+    <!-- Page: Today -->
+    <template x-if="page === 'today'">
+      <div x-data="todayPage()" x-init="loadData()">
+        <div class="page-header">
+          <h2>Today</h2>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-ghost btn-sm" @click="loadData()" :disabled="isLoading || actionInFlight === 'rebuild'">Refresh</button>
+            <button class="btn btn-primary btn-sm" @click="rebuildPlan()" :disabled="isLoading || actionInFlight === 'rebuild'" x-text="actionInFlight === 'rebuild' ? 'Rebuilding...' : 'Rebuild plan'"></button>
+          </div>
+        </div>
+        <div class="page-body">
+          <div class="info-card">
+            <h4>Today plan</h4>
+            <p>Keep this view narrow: one outcome, one focus task, one blocker, and a realistic must/should/could split.</p>
+            <p class="text-xs text-dim" x-text="localStatusText()"></p>
+          </div>
+
+          <div x-show="isLoading" class="loading-state"><div class="spinner"></div><span>Loading today plan...</span></div>
+
+          <div x-show="!isLoading && error" class="error-state">
+            <span class="error-icon">!</span>
+            <p x-text="error"></p>
+            <button class="btn btn-ghost btn-sm" @click="loadData()">Retry</button>
+          </div>
+
+          <div x-show="!isLoading && !error && !hasPlan()" class="empty-state">
+            <div class="empty-state-icon">&#9711;</div>
+            <h3>No today plan yet</h3>
+            <p>No plan yet. Rebuild today to rank your work.</p>
+            <button class="btn btn-primary empty-state-action" @click="rebuildPlan()" :disabled="actionInFlight === 'rebuild'">Build today plan</button>
+          </div>
+
+          <div x-show="!isLoading && !error && hasPlan()">
+            <div class="card mb-4">
+              <div class="card-header">Daily outcome</div>
+              <div style="font-size:18px;font-weight:600;line-height:1.5" x-text="data.daily_outcome || 'Clarify the inbox and protect focus.'"></div>
+            </div>
+
+            <div class="stats-row">
+              <div class="stat-card">
+                <div class="stat-label">Suggested focus</div>
+                <div class="stat-value" style="font-size:18px" x-text="focusTitle()"></div>
+                <div class="text-xs text-dim" x-text="focusAction()"></div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Main blocker</div>
+                <div class="stat-value" style="font-size:18px" x-text="mainBlockerTitle()"></div>
+                <div class="text-xs text-dim" x-text="mainBlockerDetail()"></div>
+              </div>
+            </div>
+
+            <div class="card-grid">
+              <div class="card">
+                <div class="card-header">Must do</div>
+                <div class="text-sm text-dim mb-4">High-commitment work only.</div>
+                <template x-if="!sectionItems('must_do').length">
+                  <div class="text-sm text-dim">Nothing in must-do yet.</div>
+                </template>
+                <div style="display:flex;flex-direction:column;gap:12px">
+                  <template x-for="task in sectionItems('must_do')" :key="task.id">
+                    <div style="padding:12px;border:1px solid var(--border);border-radius:14px;background:color-mix(in srgb, var(--surface2) 88%, transparent)">
+                      <div class="flex items-center justify-between gap-2 mb-2">
+                        <div class="font-bold" x-text="task.title"></div>
+                        <span class="badge" :class="priorityBadgeClass(task.priority)" x-text="priorityLabel(task.priority)"></span>
+                      </div>
+                      <div x-show="showRecommendation(task.agent_recommendation)" class="mb-2">
+                        <button class="btn btn-ghost btn-sm" style="padding:4px 10px" @click="toggleRecommendation(task.id)" x-text="recommendationLabel(task.agent_recommendation)"></button>
+                        <div class="text-xs text-dim mt-2" x-show="recommendationExpanded(task.id)" x-text="task.agent_recommendation && task.agent_recommendation.reason"></div>
+                      </div>
+                      <div class="text-sm text-dim" x-text="task.next_action"></div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-header">Should do</div>
+                <div class="text-sm text-dim mb-4">Strong candidates if must-do is on track.</div>
+                <template x-if="!sectionItems('should_do').length">
+                  <div class="text-sm text-dim">Nothing in should-do yet.</div>
+                </template>
+                <div style="display:flex;flex-direction:column;gap:12px">
+                  <template x-for="task in sectionItems('should_do')" :key="task.id">
+                    <div style="padding:12px;border:1px solid var(--border);border-radius:14px;background:color-mix(in srgb, var(--surface2) 88%, transparent)">
+                      <div class="flex items-center justify-between gap-2 mb-2">
+                        <div class="font-bold" x-text="task.title"></div>
+                        <span class="badge" :class="priorityBadgeClass(task.priority)" x-text="priorityLabel(task.priority)"></span>
+                      </div>
+                      <div x-show="showRecommendation(task.agent_recommendation)" class="mb-2">
+                        <button class="btn btn-ghost btn-sm" style="padding:4px 10px" @click="toggleRecommendation(task.id)" x-text="recommendationLabel(task.agent_recommendation)"></button>
+                        <div class="text-xs text-dim mt-2" x-show="recommendationExpanded(task.id)" x-text="task.agent_recommendation && task.agent_recommendation.reason"></div>
+                      </div>
+                      <div class="text-sm text-dim" x-text="task.next_action"></div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-header">Could do</div>
+                <div class="text-sm text-dim mb-4">Optional work for extra capacity.</div>
+                <template x-if="!sectionItems('could_do').length">
+                  <div class="text-sm text-dim">Nothing in could-do yet.</div>
+                </template>
+                <div style="display:flex;flex-direction:column;gap:12px">
+                  <template x-for="task in sectionItems('could_do')" :key="task.id">
+                    <div style="padding:12px;border:1px solid var(--border);border-radius:14px;background:color-mix(in srgb, var(--surface2) 88%, transparent)">
+                      <div class="flex items-center justify-between gap-2 mb-2">
+                        <div class="font-bold" x-text="task.title"></div>
+                        <span class="badge" :class="priorityBadgeClass(task.priority)" x-text="priorityLabel(task.priority)"></span>
+                      </div>
+                      <div x-show="showRecommendation(task.agent_recommendation)" class="mb-2">
+                        <button class="btn btn-ghost btn-sm" style="padding:4px 10px" @click="toggleRecommendation(task.id)" x-text="recommendationLabel(task.agent_recommendation)"></button>
+                        <div class="text-xs text-dim mt-2" x-show="recommendationExpanded(task.id)" x-text="task.agent_recommendation && task.agent_recommendation.reason"></div>
+                      </div>
+                      <div class="text-sm text-dim" x-text="task.next_action"></div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Page: Inbox -->
+    <template x-if="page === 'inbox'">
+      <div x-data="inboxPage()" x-init="loadData()">
+        <div class="page-header">
+          <h2>Inbox</h2>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-ghost btn-sm" @click="loadData()" :disabled="isLoading || !!actionInFlight">Refresh</button>
+          </div>
+        </div>
+        <div class="page-body">
+          <div class="info-card">
+            <h4>Capture first</h4>
+            <p>Dump raw work here, then clarify one item at a time into structured planner work.</p>
+            <p class="text-xs text-dim" x-text="localStatusText()"></p>
+          </div>
+
+          <div class="card mb-4">
+            <div class="card-header">Capture an inbox item</div>
+            <div class="form-group">
+              <textarea class="form-textarea" rows="4" x-model="captureText" placeholder="Need to define planner schema and wire Today page this week"></textarea>
+            </div>
+            <div class="flex items-center justify-between gap-3">
+              <div class="text-sm text-dim">Keep it raw. Clarification turns this into structured work.</div>
+              <button class="btn btn-primary" @click="captureItem()" :disabled="actionInFlight === 'capture' || !captureText.trim()" x-text="actionInFlight === 'capture' ? 'Capturing...' : 'Capture item'"></button>
+            </div>
+          </div>
+
+          <div x-show="isLoading" class="loading-state"><div class="spinner"></div><span>Loading inbox...</span></div>
+
+          <div x-show="!isLoading && error" class="error-state">
+            <span class="error-icon">!</span>
+            <p x-text="error"></p>
+            <button class="btn btn-ghost btn-sm" @click="loadData()">Retry</button>
+          </div>
+
+          <div x-show="!isLoading && !error && !items().length" class="empty-state">
+            <div class="empty-state-icon">&#9998;</div>
+            <h3>Inbox is empty</h3>
+            <p>Capture a task, idea, or messy thought.</p>
+          </div>
+
+          <div x-show="!isLoading && !error && items().length" style="display:flex;flex-direction:column;gap:12px">
+            <template x-for="item in items()" :key="item.id">
+              <div class="card">
+                <div class="flex items-center justify-between gap-3 mb-2">
+                  <span class="badge" :class="item.status === 'clarified' ? 'badge-success' : 'badge-info'" x-text="item.status === 'clarified' ? 'Clarified' : 'Captured'"></span>
+                  <div class="text-xs text-dim" x-text="formatDate(item.created_at)"></div>
+                </div>
+                <div class="text-xs text-dim mb-2">Original capture</div>
+                <div style="font-size:15px;line-height:1.6;margin-bottom:12px" x-text="item.text"></div>
+
+                <div x-show="item.status === 'clarified' && item.tasks && item.tasks.length" style="margin-bottom:12px">
+                  <div class="text-xs text-dim mb-2">Split into tasks</div>
+                  <div style="display:flex;flex-direction:column;gap:10px">
+                    <template x-for="task in item.tasks" :key="task.id">
+                      <div style="padding:12px;border:1px solid var(--border);border-radius:14px;background:color-mix(in srgb, var(--surface) 94%, transparent)">
+                        <div class="font-bold mb-2" x-text="task.title"></div>
+                        <div class="text-sm text-dim mb-2" x-text="task.next_action"></div>
+                        <div class="flex items-center gap-2 mb-2" style="flex-wrap:wrap">
+                          <span class="badge" :class="priorityBadgeClass(task.priority)" x-text="priorityLabel(task.priority)"></span>
+                          <span class="badge badge-dim" x-show="item.project_title" x-text="item.project_title ? 'Project: ' + item.project_title : ''"></span>
+                        </div>
+                        <div x-show="firstStrongRecommendation(task)">
+                          <div class="text-xs text-dim">Suggested agent</div>
+                          <div class="text-sm" x-text="firstStrongRecommendation(task) && firstStrongRecommendation(task).name"></div>
+                          <div class="text-xs text-dim" x-text="firstStrongRecommendation(task) && firstStrongRecommendation(task).reason"></div>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="text-sm text-dim" x-text="item.status === 'clarified' ? 'Structured work created from this item.' : 'Not clarified yet.'"></div>
+                  <button class="btn btn-primary btn-sm" x-show="item.status !== 'clarified'" @click="clarifyItem(item.id)" :disabled="isClarifying(item.id)" x-text="isClarifying(item.id) ? 'Clarifying into structured work...' : 'Clarify'"></button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Page: Agent Catalog -->
+    <template x-if="page === 'agent-catalog'">
+      <div x-data="agentCatalogPage()" x-init="loadData()">
+        <div class="page-header">
+          <h2>Agents</h2>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-ghost btn-sm" @click="loadData()" :disabled="isLoading || !!actionInFlight">Refresh</button>
+          </div>
+        </div>
+        <div class="page-body">
+          <div class="info-card">
+            <h4>The planner stays in charge</h4>
+            <p>Specialists appear when the match is strong.</p>
+          </div>
+
+          <div x-show="isLoading" class="loading-state"><div class="spinner"></div><span>Loading specialists...</span></div>
+
+          <div x-show="!isLoading && error" class="error-state">
+            <span class="error-icon">!</span>
+            <p x-text="error"></p>
+            <button class="btn btn-ghost btn-sm" @click="loadData()">Retry</button>
+          </div>
+
+          <div x-show="!isLoading && !error" class="card-grid">
+            <template x-for="agent in agents" :key="agent.catalog_id">
+              <div class="card">
+                <div class="flex items-center justify-between gap-3 mb-3">
+                  <div>
+                    <div class="card-header" x-text="agent.name"></div>
+                    <div class="text-sm text-dim" x-text="agent.description"></div>
+                  </div>
+                  <span class="badge" :class="agent.enabled ? 'badge-success' : 'badge-muted'" x-text="agent.enabled ? 'Enabled' : 'Disabled'"></span>
+                </div>
+                <div class="text-sm" style="margin-bottom:8px" x-text="agent.role"></div>
+                <div class="text-sm text-dim" style="margin-bottom:12px" x-text="agent.purpose"></div>
+                <div class="text-xs text-dim mb-2"><strong>Best for:</strong> <span x-text="agent.best_for"></span></div>
+                <div class="text-xs text-dim mb-2"><strong>Avoid for:</strong> <span x-text="agent.avoid_for"></span></div>
+                <div class="text-xs text-dim mb-3"><strong>Example:</strong> <span x-text="agent.example"></span></div>
+                <div class="text-xs text-dim mb-3" x-show="savedMessage(agent.catalog_id)" x-text="savedMessage(agent.catalog_id)"></div>
+                <div class="flex items-center gap-2" style="flex-wrap:wrap">
+                  <span class="badge badge-dim" x-text="agent.source_label"></span>
+                  <span class="badge badge-dim" x-text="agent.division"></span>
+                </div>
+                <button class="btn btn-ghost btn-sm" @click="toggleAgent(agent)" :disabled="isUpdating(agent.catalog_id)" x-text="isUpdating(agent.catalog_id) ? 'Saving...' : (agent.enabled ? 'Disable' : 'Enable')"></button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </template>
 
     <!-- Page: Overview -->
     <template x-if="page === 'overview'">
@@ -755,7 +1038,7 @@
                   <span class="text-xs" style="color:var(--danger)" x-text="formatRecordingTime()"></span>
                 </div>
                 <textarea id="msg-input" rows="1" :placeholder="recording ? 'Recording... release to send' : 'Message OpenFang... (/ for commands)'"
-                          @keydown.enter.prevent="if(!$event.isComposing && $event.keyCode !== 229 && !$event.shiftKey){if(showModelPicker && filteredModelPicker.length){pickModel(filteredModelPicker[modelPickerIdx].id)}else if(showSlashMenu && filteredSlashCommands.length){executeSlashCommand(filteredSlashCommands[slashIdx].cmd)}else{sendMessage()}}"
+                          @keydown.enter.prevent="if(!$event.isComposing && !$event.shiftKey){if(showModelPicker && filteredModelPicker.length){pickModel(filteredModelPicker[modelPickerIdx].id)}else if(showSlashMenu && filteredSlashCommands.length){executeSlashCommand(filteredSlashCommands[slashIdx].cmd)}else{sendMessage()}}"
                           @keydown.escape="showSlashMenu = false; showModelPicker = false"
                           @keydown.arrow-up.prevent="if(showModelPicker){modelPickerIdx = Math.max(0, modelPickerIdx - 1)}else if(showSlashMenu){slashIdx = Math.max(0, slashIdx - 1)}"
                           @keydown.arrow-down.prevent="if(showModelPicker){modelPickerIdx = Math.min(filteredModelPicker.length - 1, modelPickerIdx + 1)}else if(showSlashMenu){slashIdx = Math.min(filteredSlashCommands.length - 1, slashIdx + 1)}"
@@ -788,7 +1071,7 @@
                     <div class="model-switcher-dropdown" x-show="showModelSwitcher" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="opacity-0 transform translate-y-1" x-transition:enter-end="opacity-100 transform translate-y-0" x-transition:leave="transition ease-in duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0">
                       <div class="model-switcher-search">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;opacity:0.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                        <input id="model-switcher-search" type="text" x-model="modelSwitcherFilter" placeholder="Search models..." @keydown.escape.stop="showModelSwitcher = false" @keydown.arrow-down.prevent="modelSwitcherIdx = Math.min(modelSwitcherIdx + 1, filteredSwitcherModels.length - 1)" @keydown.arrow-up.prevent="modelSwitcherIdx = Math.max(modelSwitcherIdx - 1, 0)" @keydown.enter.prevent="!$event.isComposing && $event.keyCode !== 229 && filteredSwitcherModels[modelSwitcherIdx] && switchModel(filteredSwitcherModels[modelSwitcherIdx])">
+                        <input id="model-switcher-search" type="text" x-model="modelSwitcherFilter" placeholder="Search models..." @keydown.escape.stop="showModelSwitcher = false" @keydown.arrow-down.prevent="modelSwitcherIdx = Math.min(modelSwitcherIdx + 1, filteredSwitcherModels.length - 1)" @keydown.arrow-up.prevent="modelSwitcherIdx = Math.max(modelSwitcherIdx - 1, 0)" @keydown.enter.prevent="filteredSwitcherModels[modelSwitcherIdx] && switchModel(filteredSwitcherModels[modelSwitcherIdx])">
                         <select x-model="modelSwitcherProviderFilter" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);font-size:11px;padding:2px 6px;cursor:pointer;font-family:var(--font-mono);flex-shrink:0">
                           <option value="">All</option>
                           <template x-for="pn in switcherProviders" :key="pn">
@@ -851,6 +1134,128 @@
           </div>
         </div>
         <div class="page-body" style="overflow-y:auto;padding:24px">
+
+          <div class="card mb-4">
+            <div class="card-header">Task router</div>
+            <div class="text-sm text-dim mb-3">Route a task to the best running agent or specialist template using the live roster.</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:start">
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <textarea class="form-input" rows="4" x-model="routeTaskInput" placeholder="Draft a client reply, schedule a meeting follow-up, debug a Rust build, plan travel, triage inbox items..."></textarea>
+                <textarea class="form-input" rows="3" x-model="routeTaskContext" placeholder="Optional context for routing or dispatch"></textarea>
+                <div class="flex gap-2">
+                  <button class="btn btn-primary btn-sm" @click="routeTask()" :disabled="routingTask" x-text="routingTask ? 'Routing…' : 'Route task'"></button>
+                  <button class="btn btn-ghost btn-sm" @click="loadRoster()" :disabled="rosterLoading">Refresh roster</button>
+                </div>
+              </div>
+
+              <div class="card" style="min-height:220px;background:color-mix(in srgb, var(--surface2) 82%, transparent)">
+                <template x-if="routingTask">
+                  <div class="loading-state" style="height:100%"><div class="spinner"></div><span>Scoring agents and templates…</span></div>
+                </template>
+
+                <template x-if="!routingTask && routeTaskResult">
+                  <div style="display:flex;flex-direction:column;gap:12px">
+                    <div class="flex items-center justify-between gap-2">
+                      <div>
+                        <div class="text-xs text-dim">Selected route</div>
+                        <div class="font-bold" x-text="routeTaskResult.selected && routeTaskResult.selected.name"></div>
+                      </div>
+                      <span class="badge" :class="routeTaskResult.dispatched ? 'badge-running' : 'badge-idle'" x-text="routeTaskResult.dispatched ? 'dispatched' : (routeTaskResult.selected ? routeTaskResult.selected.status : 'idle')"></span>
+                    </div>
+                    <div class="text-sm text-dim" x-text="routeTaskResult.reason"></div>
+                    <div class="text-xs text-dim" x-show="routeTaskResult.matched_keywords && routeTaskResult.matched_keywords.length" x-text="'Matched: ' + routeTaskResult.matched_keywords.join(', ')"></div>
+                    <div class="text-sm" x-show="routeTaskResult.response" x-text="routeTaskResult.response"></div>
+                    <div class="text-sm text-dim" x-show="!routeTaskResult.response" x-text="routeTaskResult.suggested_action"></div>
+                    <div class="flex gap-2" x-show="routeTaskResult.selected">
+                      <button class="btn btn-primary btn-sm" @click="activateRosterEntry(routeTaskResult.selected)" x-text="rosterActionLabel(routeTaskResult.selected)"></button>
+                      <template x-for="link in ((routeTaskResult.selected && routeTaskResult.selected.service_links) || []).slice(0, 2)" :key="link.href + link.label">
+                        <a class="btn btn-ghost btn-sm" :href="link.href" :target="link.kind === 'api' ? '_blank' : null" x-text="link.label"></a>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+
+                <template x-if="!routingTask && !routeTaskResult">
+                  <div class="empty-state" style="min-height:180px;padding:0;border:none;background:transparent">
+                    <div class="empty-state-icon">&#10548;</div>
+                    <h3>Route work from the roster</h3>
+                    <p>The router prefers running agents when possible and recommends a specialist template when you need to spawn one.</p>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <div class="card mb-4">
+            <div class="card-header">Agent roster</div>
+            <div class="text-sm text-dim mb-3">Running agents and workspace templates, with direct links into the relevant REST surfaces.</div>
+            <div x-show="rosterLoading" class="loading-state"><div class="spinner"></div><span>Loading roster...</span></div>
+            <div x-show="!rosterLoading && rosterError" class="error-state">
+              <span class="error-icon">!</span>
+              <p x-text="rosterError"></p>
+            </div>
+
+            <div x-show="!rosterLoading && !rosterError">
+              <div class="text-sm font-bold mb-2" style="color:var(--text-dim);letter-spacing:0.5px;font-size:11px;text-transform:uppercase">Running agents</div>
+              <div class="card-grid mb-4">
+                <template x-for="entry in rosterRunningAgents" :key="entry.source + ':' + entry.id">
+                  <div class="card">
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                      <div>
+                        <div class="font-bold" x-text="entry.name"></div>
+                        <div class="text-xs text-dim" x-text="(entry.model_provider || '?') + ':' + (entry.model_name || '?')"></div>
+                      </div>
+                      <span class="badge" :class="entry.dispatchable ? 'badge-running' : 'badge-idle'" x-text="entry.dispatchable ? 'ready' : entry.status"></span>
+                    </div>
+                    <div class="text-sm text-dim mb-3" x-text="entry.description || 'No description provided.'"></div>
+                    <div class="flex gap-1" style="flex-wrap:wrap;margin-bottom:12px">
+                      <template x-for="capability in entry.capabilities.slice(0, 5)" :key="capability">
+                        <span class="badge badge-idle" x-text="capability"></span>
+                      </template>
+                    </div>
+                    <div class="flex gap-2" style="flex-wrap:wrap">
+                      <button class="btn btn-primary btn-sm" @click="activateRosterEntry(entry)">Open Chat</button>
+                      <template x-for="link in entry.service_links.slice(0, 2)" :key="link.href + link.label">
+                        <a class="btn btn-ghost btn-sm" :href="link.href" target="_blank" x-text="link.label"></a>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+                <div class="empty-state" x-show="!rosterRunningAgents.length" style="grid-column:1/-1">
+                  <div class="empty-state-icon">&#9711;</div>
+                  <h3>No running agents</h3>
+                  <p>Spawn one of the templates below to start routing live work.</p>
+                </div>
+              </div>
+
+              <div class="text-sm font-bold mb-2" style="color:var(--text-dim);letter-spacing:0.5px;font-size:11px;text-transform:uppercase">Specialist templates</div>
+              <div class="card-grid">
+                <template x-for="entry in rosterTemplates.slice(0, 12)" :key="entry.source + ':' + entry.id">
+                  <div class="card">
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                      <div>
+                        <div class="font-bold" x-text="entry.name"></div>
+                        <div class="text-xs text-dim" x-text="entry.profile ? ('profile: ' + entry.profile) : 'template'"></div>
+                      </div>
+                      <span class="badge badge-idle" x-text="entry.status"></span>
+                    </div>
+                    <div class="text-sm text-dim mb-3" x-text="entry.description || 'No description provided.'"></div>
+                    <div class="flex gap-1" style="flex-wrap:wrap;margin-bottom:12px">
+                      <template x-for="tag in entry.tags.slice(0, 4)" :key="tag">
+                        <span class="badge badge-idle" x-text="tag"></span>
+                      </template>
+                    </div>
+                    <div class="flex gap-2" style="flex-wrap:wrap">
+                      <button class="btn btn-primary btn-sm" @click="activateRosterEntry(entry)">Spawn Agent</button>
+                      <template x-for="link in entry.service_links.slice(0, 2)" :key="link.href + link.label">
+                        <a class="btn btn-ghost btn-sm" :href="link.href" target="_blank" x-text="link.label"></a>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
 
           <!-- Running agents — click to chat -->
           <div x-show="agents.length" style="margin-bottom:28px">
@@ -1110,7 +1515,7 @@
                   <div x-show="spawnStep === 1">
                     <div class="form-group">
                       <label>Agent Name</label>
-                      <input class="form-input" x-model="spawnForm.name" placeholder="my-agent" @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229) nextStep()">
+                      <input class="form-input" x-model="spawnForm.name" placeholder="my-agent" @keydown.enter="nextStep()">
                     </div>
                     <div class="form-group">
                       <label>Emoji</label>
@@ -1339,9 +1744,7 @@
                     <td class="text-xs" x-text="new Date(wf.created_at).toLocaleDateString()"></td>
                     <td>
                       <button class="btn btn-primary btn-sm" @click="showRunModal(wf)">Run</button>
-                      <button class="btn btn-ghost btn-sm" @click="showEditModal(wf)">Edit</button>
                       <button class="btn btn-ghost btn-sm" @click="viewRuns(wf)">History</button>
-                      <button class="btn btn-danger btn-sm" @click="deleteWorkflow(wf)">Delete</button>
                     </td>
                   </tr>
                 </template>
@@ -1403,39 +1806,6 @@
                   <div class="card-header">Result</div>
                   <pre style="font-size:11px;white-space:pre-wrap;margin-top:8px;color:var(--text-dim)" x-text="runResult"></pre>
                 </div>
-              </div>
-            </div>
-          </template>
-          <!-- Edit modal -->
-          <template x-if="editModal">
-            <div class="modal-overlay" @click.self="editModal = null" @keydown.escape.window="editModal = null">
-              <div class="modal">
-                <div class="modal-header"><h3 x-text="'Edit: ' + editModal.name"></h3><button class="modal-close" @click="editModal = null">&times;</button></div>
-                <div class="form-group"><label>Name</label><input class="form-input" x-model="editWf.name" placeholder="Workflow name"></div>
-                <div class="form-group"><label>Description</label><input class="form-input" x-model="editWf.description" placeholder="What does this workflow do?"></div>
-                <div class="mb-4">
-                  <div class="form-group" style="margin:0"><label>Steps</label></div>
-                  <div class="text-xs text-dim mb-2">Each step runs an agent. Use <code style="color:var(--accent)">{{input}}</code> in prompts to pass the previous step's output.</div>
-                  <template x-for="(step, i) in editWf.steps" :key="i">
-                    <div class="card mt-2" style="padding:10px">
-                      <div class="flex gap-2 items-center">
-                        <span class="text-xs text-dim font-bold" x-text="'#' + (i+1)" style="width:24px"></span>
-                        <input class="form-input" style="flex:1" x-model="step.name" placeholder="Step name">
-                        <input class="form-input" style="flex:1" x-model="step.agent_name" placeholder="Agent name">
-                        <select class="form-select" style="width:120px" x-model="step.mode">
-                          <option value="sequential">Sequential</option>
-                          <option value="fan_out">Fan Out</option>
-                          <option value="conditional">Conditional</option>
-                          <option value="loop">Loop</option>
-                        </select>
-                        <button class="btn btn-danger btn-sm" @click="editWf.steps.splice(i,1)">&times;</button>
-                      </div>
-                      <input class="form-input mt-2" x-model="step.prompt" placeholder="Prompt template (use {{input}})">
-                    </div>
-                  </template>
-                  <button class="btn btn-ghost btn-sm mt-2" @click="editWf.steps.push({name:'',agent_name:'',mode:'sequential',prompt:'{{input}}'})">+ Add Step</button>
-                </div>
-                <button class="btn btn-primary btn-block" @click="saveWorkflow()">Save Changes</button>
               </div>
             </div>
           </template>
@@ -1522,7 +1892,7 @@
                 <div>
                   <div class="form-group">
                     <label class="text-xs">Label</label>
-                    <input class="form-input" x-model="selectedNode.label" @input="applyNodeEdit()" style="font-size:11px">
+                    <input class="form-input" x-model="selectedNode.label" style="font-size:11px">
                   </div>
 
                   <!-- Agent config -->
@@ -1530,7 +1900,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Agent</label>
-                        <select class="form-select" x-model="selectedNode.config.agent_name" @change="applyNodeEdit()" style="font-size:11px">
+                        <select class="form-select" x-model="selectedNode.config.agent_name" style="font-size:11px">
                           <option value="">Select agent...</option>
                           <template x-for="a in agents" :key="a.id || a.name">
                             <option :value="a.name" x-text="a.name"></option>
@@ -1539,11 +1909,11 @@
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Prompt Template</label>
-                        <textarea class="form-textarea" x-model="selectedNode.config.prompt" @input="applyNodeEdit()" style="font-size:11px;min-height:60px" placeholder="{{input}}"></textarea>
+                        <textarea class="form-textarea" x-model="selectedNode.config.prompt" style="font-size:11px;min-height:60px" placeholder="{{input}}"></textarea>
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Model (optional)</label>
-                        <input class="form-input" x-model="selectedNode.config.model" @input="applyNodeEdit()" style="font-size:11px" placeholder="Default model">
+                        <input class="form-input" x-model="selectedNode.config.model" style="font-size:11px" placeholder="Default model">
                       </div>
                     </div>
                   </template>
@@ -1553,7 +1923,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Expression</label>
-                        <input class="form-input" x-model="selectedNode.config.expression" @input="applyNodeEdit()" style="font-size:11px" placeholder="output.contains('yes')">
+                        <input class="form-input" x-model="selectedNode.config.expression" style="font-size:11px" placeholder="output.contains('yes')">
                       </div>
                       <div class="text-xs text-dim">Top port = true, bottom port = false</div>
                     </div>
@@ -1564,11 +1934,11 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Max Iterations</label>
-                        <input type="number" class="form-input" x-model.number="selectedNode.config.max_iterations" @input="applyNodeEdit()" style="font-size:11px" min="1" max="100">
+                        <input type="number" class="form-input" x-model.number="selectedNode.config.max_iterations" style="font-size:11px" min="1" max="100">
                       </div>
                       <div class="form-group">
                         <label class="text-xs">Until (stop condition)</label>
-                        <input class="form-input" x-model="selectedNode.config.until" @input="applyNodeEdit()" style="font-size:11px" placeholder="output === 'done'">
+                        <input class="form-input" x-model="selectedNode.config.until" style="font-size:11px" placeholder="output === 'done'">
                       </div>
                     </div>
                   </template>
@@ -1578,7 +1948,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Fan-out Count</label>
-                        <input type="number" class="form-input" x-model.number="selectedNode.config.fan_count" @input="applyNodeEdit()" style="font-size:11px" min="2" max="10">
+                        <input type="number" class="form-input" x-model.number="selectedNode.config.fan_count" style="font-size:11px" min="2" max="10">
                       </div>
                     </div>
                   </template>
@@ -1588,7 +1958,7 @@
                     <div>
                       <div class="form-group">
                         <label class="text-xs">Strategy</label>
-                        <select class="form-select" x-model="selectedNode.config.strategy" @change="applyNodeEdit()" style="font-size:11px">
+                        <select class="form-select" x-model="selectedNode.config.strategy" style="font-size:11px">
                           <option value="all">Wait for all</option>
                           <option value="first">First to finish</option>
                           <option value="majority">Majority vote</option>
@@ -2226,7 +2596,7 @@
             <!-- Search bar with live search and clear button -->
             <div class="search-input mb-4" style="position:relative">
               <span style="color:var(--text-muted)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></span>
-              <input placeholder="Search ClawHub skills... (type to search)" x-model="clawhubSearch" @input="onSearchInput()" @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229) searchClawHub()" @keydown.escape="clearSearch()" x-ref="clawhubSearchInput">
+              <input placeholder="Search ClawHub skills... (type to search)" x-model="clawhubSearch" @input="onSearchInput()" @keydown.enter="searchClawHub()" @keydown.escape="clearSearch()" x-ref="clawhubSearchInput">
               <button x-show="clawhubSearch" @click="clearSearch()" class="search-clear-btn" title="Clear search (Esc)">&times;</button>
             </div>
 
@@ -2584,9 +2954,6 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                     <!-- Actions -->
                     <div class="flex gap-2 mt-3">
                       <button class="btn btn-ghost btn-sm" @click="loadStats(inst)">Stats</button>
-                      <template x-if="isTraderHand(inst)">
-                        <button class="btn btn-primary btn-sm" @click="openDashboard(inst)">Dashboard</button>
-                      </template>
                       <template x-if="isBrowserHand(inst)">
                         <button class="btn btn-ghost btn-sm" @click="openBrowserViewer(inst)">View Browser</button>
                       </template>
@@ -2699,9 +3066,9 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <!-- ═══ Step 1: Dependencies ═══ -->
                   <div class="hand-wizard-body" x-show="setupStep === 1">
                     <template x-for="req in (setupWizard.requirements || [])" :key="req.key">
-                      <div class="dep-card" :class="(req.satisfied || (req.type === 'ApiKey' && apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== '')) ? 'dep-met' : 'dep-missing'">
+                      <div class="dep-card" :class="req.satisfied ? 'dep-met' : 'dep-missing'">
                         <div class="dep-card-header">
-                          <div class="dep-status-icon" :class="[(req.satisfied || (req.type === 'ApiKey' && apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== '')) ? 'met' : 'missing', setupChecking ? 'checking' : '']" x-text="(req.satisfied || (req.type === 'ApiKey' && apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== '')) ? '\u2713' : '\u2717'"></div>
+                          <div class="dep-status-icon" :class="[req.satisfied ? 'met' : 'missing', setupChecking ? 'checking' : '']" x-text="req.satisfied ? '\u2713' : '\u2717'"></div>
                           <span class="dep-card-title" x-text="req.label"></span>
                           <template x-if="req.install && req.install.estimated_time">
                             <span class="dep-time-badge" x-text="req.install.estimated_time"></span>
@@ -2744,32 +3111,24 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                               </ol>
                             </template>
 
-                            <!-- API Key: input field + numbered steps + signup link -->
+                            <!-- API Key: numbered steps + signup link -->
                             <template x-if="req.type === 'ApiKey' && req.install">
                               <div>
-                                <div style="margin-bottom:10px">
-                                  <label class="text-xs text-dim" style="display:block;margin-bottom:4px" x-text="'Paste your ' + req.label + ':'"></label>
-                                  <input type="password" class="form-input" x-model="apiKeyInputs[req.key]" :placeholder="req.label" style="width:100%;font-family:var(--font-mono);font-size:12px">
-                                  <div class="text-xs" style="margin-top:4px;color:var(--green)" x-show="apiKeyInputs[req.key] && apiKeyInputs[req.key].trim() !== ''">&check; Token entered</div>
-                                </div>
-                                <details style="margin-bottom:8px">
-                                  <summary class="text-xs text-dim" style="cursor:pointer;user-select:none">Or set as environment variable</summary>
-                                  <template x-if="req.install.steps && req.install.steps.length">
-                                    <ol class="api-key-steps">
-                                      <template x-for="step in req.install.steps" :key="step">
-                                        <li x-text="step"></li>
-                                      </template>
-                                    </ol>
-                                  </template>
-                                  <template x-if="req.install.env_example">
-                                    <div class="install-block" style="margin-top:8px">
-                                      <div class="install-cmd">
-                                        <code x-text="req.install.env_example"></code>
-                                        <button class="copy-btn" :class="{ copied: clipboardMsg === req.install.env_example }" @click="copyToClipboard(req.install.env_example)" x-text="clipboardMsg === req.install.env_example ? 'Copied!' : 'Copy'"></button>
-                                      </div>
+                                <template x-if="req.install.steps && req.install.steps.length">
+                                  <ol class="api-key-steps">
+                                    <template x-for="step in req.install.steps" :key="step">
+                                      <li x-text="step"></li>
+                                    </template>
+                                  </ol>
+                                </template>
+                                <template x-if="req.install.env_example">
+                                  <div class="install-block" style="margin-top:8px">
+                                    <div class="install-cmd">
+                                      <code x-text="req.install.env_example"></code>
+                                      <button class="copy-btn" :class="{ copied: clipboardMsg === req.install.env_example }" @click="copyToClipboard(req.install.env_example)" x-text="clipboardMsg === req.install.env_example ? 'Copied!' : 'Copy'"></button>
                                     </div>
-                                  </template>
-                                </details>
+                                  </div>
+                                </template>
                                 <div class="flex gap-2 mt-2">
                                   <template x-if="req.install.signup_url">
                                     <a :href="req.install.signup_url" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Get API Key &rarr;</a>
@@ -2997,152 +3356,6 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   <div class="browser-info" x-show="browserViewer && !browserViewer.loading && !browserViewer.error">
                     <div class="text-dim text-sm">Title: <span x-text="browserViewer ? (browserViewer.title || '-') : '-'"></span></div>
                   </div>
-                </div>
-              </div>
-            </div>
-          </template>
-
-          <!-- Trader Dashboard Modal -->
-          <template x-if="dashboardOpen">
-            <div class="modal-overlay" @click.self="closeDashboard()" @keydown.escape.window="closeDashboard()">
-              <div class="trader-dashboard">
-                <!-- Header -->
-                <div class="trader-dashboard-header">
-                  <div class="flex items-center gap-2">
-                    <span style="font-size:1.4rem">&#x1F4C8;</span>
-                    <div>
-                      <div style="font-weight:600;font-size:1.1rem" x-text="dashboardData ? (dashboardData.agent_name || 'Trading Hand') : 'Trading Hand'"></div>
-                      <div class="text-xs text-dim">Live Trading Dashboard</div>
-                    </div>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <button class="btn btn-ghost btn-sm" @click="refreshDashboard()">Refresh</button>
-                    <button class="modal-close" @click="closeDashboard()">&times;</button>
-                  </div>
-                </div>
-
-                <!-- Loading -->
-                <div x-show="dashboardLoading" class="text-center" style="padding:60px 0">
-                  <div class="spinner"></div>
-                  <div class="text-dim mt-2">Loading dashboard data...</div>
-                </div>
-
-                <!-- Dashboard Content -->
-                <div class="trader-dashboard-body" x-show="!dashboardLoading && dashboardData">
-                  <!-- KPI Row -->
-                  <div class="trader-kpi-row">
-                    <div class="trader-kpi-card">
-                      <div class="trader-kpi-label">Portfolio Value</div>
-                      <div class="trader-kpi-value" x-text="dashboardData ? (dashboardData.portfolio_value || '-') : '-'"></div>
-                    </div>
-                    <div class="trader-kpi-card">
-                      <div class="trader-kpi-label">Total P&amp;L</div>
-                      <div class="trader-kpi-value" :class="dashboardData && dashboardData.total_pnl && dashboardData.total_pnl.startsWith('+') ? 'kpi-positive' : (dashboardData && dashboardData.total_pnl && dashboardData.total_pnl.startsWith('-') ? 'kpi-negative' : '')" x-text="dashboardData ? (dashboardData.total_pnl || '-') : '-'"></div>
-                    </div>
-                    <div class="trader-kpi-card">
-                      <div class="trader-kpi-label">Win Rate</div>
-                      <div class="trader-kpi-value" x-text="dashboardData && dashboardData.win_rate ? (dashboardData.win_rate + '%') : '-'"></div>
-                    </div>
-                    <div class="trader-kpi-card">
-                      <div class="trader-kpi-label">Sharpe Ratio</div>
-                      <div class="trader-kpi-value" x-text="dashboardData ? (dashboardData.sharpe_ratio || '-') : '-'"></div>
-                    </div>
-                    <div class="trader-kpi-card">
-                      <div class="trader-kpi-label">Max Drawdown</div>
-                      <div class="trader-kpi-value kpi-negative" x-text="dashboardData && dashboardData.max_drawdown ? (dashboardData.max_drawdown + '%') : '-'"></div>
-                    </div>
-                    <div class="trader-kpi-card">
-                      <div class="trader-kpi-label">Trades</div>
-                      <div class="trader-kpi-value" x-text="dashboardData ? (dashboardData.trades_count || '0') : '0'"></div>
-                    </div>
-                  </div>
-
-                  <!-- Charts Row 1: Equity Curve + Daily P&L -->
-                  <div class="trader-chart-row">
-                    <div class="trader-chart-panel" style="flex:2">
-                      <div class="trader-chart-title">Equity Curve</div>
-                      <div class="trader-chart-wrap">
-                        <canvas id="traderEquityChart"></canvas>
-                        <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.equity_curve || !dashboardData.equity_curve.length">No equity data yet</div>
-                      </div>
-                    </div>
-                    <div class="trader-chart-panel" style="flex:1">
-                      <div class="trader-chart-title">Daily P&amp;L</div>
-                      <div class="trader-chart-wrap">
-                        <canvas id="traderPnlChart"></canvas>
-                        <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.daily_pnl || !dashboardData.daily_pnl.length">No P&amp;L data yet</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Charts Row 2: Signal Radar + Watchlist Heatmap -->
-                  <div class="trader-chart-row">
-                    <div class="trader-chart-panel" style="flex:1;max-width:320px">
-                      <div class="trader-chart-title">Signal Radar</div>
-                      <div class="trader-chart-wrap" style="max-height:280px">
-                        <canvas id="traderRadarChart"></canvas>
-                        <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.signal_radar">No signal data yet</div>
-                      </div>
-                    </div>
-                    <div class="trader-chart-panel" style="flex:2">
-                      <div class="trader-chart-title">Watchlist Heatmap</div>
-                      <div class="trader-heatmap-wrap" x-show="dashboardData && dashboardData.watchlist_heatmap && dashboardData.watchlist_heatmap.length">
-                        <table class="trader-heatmap-table">
-                          <thead>
-                            <tr><th>Ticker</th><th>Change</th><th>Signal</th><th>Confidence</th></tr>
-                          </thead>
-                          <tbody>
-                            <template x-for="item in (dashboardData ? dashboardData.watchlist_heatmap || [] : [])" :key="item.ticker">
-                              <tr>
-                                <td style="font-weight:600" x-text="item.ticker"></td>
-                                <td :class="item.change_pct >= 0 ? 'heatmap-positive' : 'heatmap-negative'" x-text="(item.change_pct >= 0 ? '+' : '') + item.change_pct + '%'"></td>
-                                <td><span class="signal-badge" :class="'signal-' + (item.signal || 'hold').toLowerCase()" x-text="item.signal || 'HOLD'"></span></td>
-                                <td>
-                                  <div class="confidence-bar-wrap">
-                                    <div class="confidence-bar" :style="'width:' + (item.confidence || 0) + '%'" :class="item.confidence >= 70 ? 'conf-high' : (item.confidence >= 40 ? 'conf-mid' : 'conf-low')"></div>
-                                    <span class="confidence-label" x-text="(item.confidence || 0) + '%'"></span>
-                                  </div>
-                                </td>
-                              </tr>
-                            </template>
-                          </tbody>
-                        </table>
-                      </div>
-                      <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.watchlist_heatmap || !dashboardData.watchlist_heatmap.length">No watchlist data yet</div>
-                    </div>
-                  </div>
-
-                  <!-- Recent Trades Table -->
-                  <div class="trader-chart-panel">
-                    <div class="trader-chart-title">Recent Trades</div>
-                    <div x-show="dashboardData && dashboardData.recent_trades && dashboardData.recent_trades.length">
-                      <table class="trader-trades-table">
-                        <thead>
-                          <tr><th>Date</th><th>Ticker</th><th>Side</th><th>Price</th><th>Qty</th><th>P&amp;L</th></tr>
-                        </thead>
-                        <tbody>
-                          <template x-for="trade in (dashboardData ? dashboardData.recent_trades || [] : [])" :key="trade.date + trade.ticker">
-                            <tr>
-                              <td class="text-dim" x-text="trade.date"></td>
-                              <td style="font-weight:600" x-text="trade.ticker"></td>
-                              <td><span class="trade-side-badge" :class="trade.side === 'BUY' ? 'trade-buy' : 'trade-sell'" x-text="trade.side"></span></td>
-                              <td x-text="'$' + Number(trade.price || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
-                              <td x-text="trade.qty"></td>
-                              <td :class="(trade.pnl || 0) >= 0 ? 'heatmap-positive' : 'heatmap-negative'" x-text="(trade.pnl >= 0 ? '+$' : '-$') + Math.abs(trade.pnl || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})"></td>
-                            </tr>
-                          </template>
-                        </tbody>
-                      </table>
-                    </div>
-                    <div class="trader-chart-empty" x-show="!dashboardData || !dashboardData.recent_trades || !dashboardData.recent_trades.length">No trades yet</div>
-                  </div>
-                </div>
-
-                <!-- No data state -->
-                <div x-show="!dashboardLoading && !dashboardData" class="text-center" style="padding:60px 0">
-                  <div style="font-size:2rem;margin-bottom:8px">&#x1F4C8;</div>
-                  <div class="text-dim">Could not load dashboard data.</div>
-                  <button class="btn btn-ghost btn-sm mt-3" @click="refreshDashboard()">Retry</button>
                 </div>
               </div>
             </div>
@@ -3669,7 +3882,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           <div x-show="tab === 'budget'" x-data="{
             budgetData: null, agentRanking: [], budgetLoading: true,
             editMode: false,
-            editHourly: '', editDaily: '', editMonthly: '', editAlert: '', editTokenLimit: '',
+            editHourly: '', editDaily: '', editMonthly: '', editAlert: '',
             saving: false,
             async loadBudget() {
               this.budgetLoading = true;
@@ -3688,7 +3901,6 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               this.editDaily = this.budgetData.daily_limit || 0;
               this.editMonthly = this.budgetData.monthly_limit || 0;
               this.editAlert = ((this.budgetData.alert_threshold || 0.8) * 100).toFixed(0);
-              this.editTokenLimit = this.budgetData.default_max_llm_tokens_per_hour || 0;
               this.editMode = true;
             },
             async saveBudget() {
@@ -3700,14 +3912,12 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 if (+this.editMonthly !== this.budgetData.monthly_limit) body.max_monthly_usd = +this.editMonthly;
                 let alertVal = (+this.editAlert) / 100;
                 if (Math.abs(alertVal - this.budgetData.alert_threshold) > 0.001) body.alert_threshold = alertVal;
-                if (+this.editTokenLimit !== (this.budgetData.default_max_llm_tokens_per_hour || 0)) body.default_max_llm_tokens_per_hour = +this.editTokenLimit;
                 await OpenFangAPI.put('/api/budget', body);
                 this.editMode = false;
                 await this.loadBudget();
               } catch(e) { OpenFangToast.error('Failed to save: ' + (e.message || e)); }
               this.saving = false;
             },
-            fmtTokens(v) { return v > 0 ? (v >= 1000000 ? (v/1000000).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(0)+'K' : v) : 'per-agent'; },
             pctColor(pct) { return pct >= 0.8 ? '#ef4444' : pct >= 0.5 ? '#eab308' : '#22c55e'; },
             fmtUsd(v) { return v > 0 ? '$' + v.toFixed(4) : 'unlimited'; }
           }" x-init="loadBudget()">
@@ -3747,11 +3957,8 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                   </div>
                 </div>
               </div>
-              <div class="text-xs text-dim mb-1" x-show="budgetData.alert_threshold > 0 && !editMode">
+              <div class="text-xs text-dim mb-3" x-show="budgetData.alert_threshold > 0 && !editMode">
                 Alert threshold: <span x-text="(budgetData.alert_threshold * 100).toFixed(0) + '%'"></span> of any limit
-              </div>
-              <div class="text-xs text-dim mb-3" x-show="!editMode">
-                Hourly token limit (per agent): <span x-text="fmtTokens(budgetData.default_max_llm_tokens_per_hour || 0)"></span>
               </div>
 
               <!-- Edit limits form -->
@@ -3774,11 +3981,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                     <input type="number" step="5" min="0" max="100" x-model="editAlert" class="input" style="width:100%;margin-top:2px" placeholder="80">
                   </div>
                 </div>
-                <div style="margin-bottom:8px">
-                  <label class="text-xs text-dim">Hourly Token Limit (per agent, 0 = use per-agent values)</label>
-                  <input type="number" step="100000" min="0" x-model="editTokenLimit" class="input" style="width:260px;margin-top:2px" placeholder="0 = per-agent default">
-                </div>
-                <div class="text-xs text-dim">Set to 0 for unlimited/per-agent default. Changes apply immediately (in-memory, not persisted to config.toml).</div>
+                <div class="text-xs text-dim">Set to 0 for unlimited. Changes apply immediately (in-memory, not persisted to config.toml).</div>
                 <button class="btn btn-sm mt-2" @click="editMode = false" style="margin-right:8px">Cancel</button>
               </div>
 
@@ -3786,7 +3989,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <h4 style="margin-top:16px;margin-bottom:8px">Top Spenders (Today)</h4>
               <div class="table-wrap" x-show="agentRanking.length">
                 <table>
-                  <thead><tr><th>Agent</th><th>Today</th><th>Hourly Limit</th><th>Daily Limit</th><th>Monthly Limit</th><th>Token Limit/hr</th></tr></thead>
+                  <thead><tr><th>Agent</th><th>Today</th><th>Hourly Limit</th><th>Daily Limit</th><th>Monthly Limit</th></tr></thead>
                   <tbody>
                     <template x-for="a in agentRanking" :key="a.agent_id">
                       <tr>
@@ -3795,7 +3998,6 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                         <td class="text-dim" x-text="fmtUsd(a.hourly_limit)"></td>
                         <td class="text-dim" x-text="fmtUsd(a.daily_limit)"></td>
                         <td class="text-dim" x-text="fmtUsd(a.monthly_limit)"></td>
-                        <td class="text-dim" x-text="fmtTokens(a.max_llm_tokens_per_hour || 0)"></td>
                       </tr>
                     </template>
                   </tbody>
@@ -4675,29 +4877,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
                 </div>
               </div>
 
-              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider === 'claude-code'">
-                <div class="card" style="border-left:3px solid var(--accent);margin-top:16px">
-                  <div class="card-header">Configure Claude Code</div>
-                  <div class="text-xs text-dim mb-2" style="line-height:1.8">
-                    Claude Code uses its own CLI authentication &mdash; no API key needed.
-                  </div>
-                  <div style="background:var(--bg);border-radius:4px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.8">
-                    <div><span style="color:var(--accent)">1.</span> Install: <code style="color:var(--accent-light);background:var(--bg-secondary);padding:1px 4px;border-radius:2px">npm install -g @anthropic-ai/claude-code</code></div>
-                    <div><span style="color:var(--accent)">2.</span> Authenticate: <code style="color:var(--accent-light);background:var(--bg-secondary);padding:1px 4px;border-radius:2px">claude auth</code></div>
-                    <div><span style="color:var(--accent)">3.</span> Click <strong>Detect</strong> below to verify</div>
-                  </div>
-                  <button class="btn btn-primary btn-sm" @click="detectClaudeCode()" :disabled="testingProvider">
-                    <span x-show="!testingProvider">Detect Claude Code</span>
-                    <span x-show="testingProvider" class="spinner" style="width:10px;height:10px;border-width:2px"></span>
-                  </button>
-                  <div x-show="testResult" class="mt-2">
-                    <div x-show="testResult && testResult.status === 'ok'" class="badge badge-success" style="padding:6px 12px">Claude Code detected<span x-show="testResult && testResult.latency_ms" x-text="' (' + (testResult ? testResult.latency_ms : '') + 'ms)'"></span></div>
-                    <div x-show="testResult && testResult.status !== 'ok'" class="badge badge-error" style="padding:6px 12px">Claude Code CLI not detected. Make sure you&rsquo;ve run: <code>npm install -g @anthropic-ai/claude-code &amp;&amp; claude auth</code></div>
-                  </div>
-                </div>
-              </template>
-
-              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj) && selectedProvider !== 'claude-code'">
+              <template x-if="selectedProviderObj && !providerIsConfigured(selectedProviderObj)">
                 <div class="card" style="border-left:3px solid var(--accent);margin-top:16px">
                   <div class="card-header" x-text="'Configure ' + selectedProviderObj.display_name"></div>
                   <div class="text-xs text-dim mb-2" x-show="selectedProviderObj.api_key_env">
@@ -4787,7 +4967,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <div class="card" style="border-left:3px solid var(--accent)">
                 <div class="form-group" style="margin-bottom:8px">
                   <label>Agent Name</label>
-                  <input class="form-input" type="text" x-model="agentName" placeholder="my-assistant" style="max-width:320px" @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229) createAgent()">
+                  <input class="form-input" type="text" x-model="agentName" placeholder="my-assistant" style="max-width:320px" @keydown.enter="createAgent()">
                 </div>
                 <div class="text-xs text-dim" x-text="'Will use ' + templates[selectedTemplate].provider + ' / ' + templates[selectedTemplate].model + ' with ' + profileInfo(templates[selectedTemplate].profile).label + ' profile'"></div>
                 <div class="mt-2">
@@ -4833,7 +5013,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <!-- Input -->
               <div style="display:flex;gap:8px;margin-top:12px">
                 <input class="form-input" type="text" x-model="tryItInput" placeholder="Type a message..."
-                       @keydown.enter="if(!$event.isComposing && $event.keyCode !== 229) sendTryItMessage(tryItInput)" :disabled="tryItSending" style="flex:1">
+                       @keydown.enter="sendTryItMessage(tryItInput)" :disabled="tryItSending" style="flex:1">
                 <button class="btn btn-primary btn-sm" @click="sendTryItMessage(tryItInput)" :disabled="tryItSending || !tryItInput.trim()">Send</button>
               </div>
             </div>

@@ -8,6 +8,7 @@
 use axum::Router;
 use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
+use openfang_orchestrator::{InMemoryWorkflowStore, MockWorkflowExecutor, WorkflowEngine};
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
@@ -49,9 +50,16 @@ async fn start_test_server() -> TestServer {
     let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
+    let orchestrator = Arc::new(WorkflowEngine::new(
+        Arc::new(InMemoryWorkflowStore::new()),
+        Arc::new(MockWorkflowExecutor),
+    ));
 
     let state = Arc::new(AppState {
         kernel,
+        orchestrator,
+        local_capabilities: tokio::sync::RwLock::new(None),
+        local_status: tokio::sync::RwLock::new(openfang_api::local_inference::LocalModelStatus::default()),
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
@@ -59,6 +67,7 @@ async fn start_test_server() -> TestServer {
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        user_rate_limiter: openfang_api::rate_limiter::create_user_rate_limiter(),
     });
 
     let app = Router::new()

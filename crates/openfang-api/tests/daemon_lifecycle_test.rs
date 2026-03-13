@@ -7,6 +7,7 @@ use axum::Router;
 use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
 use openfang_api::server::{read_daemon_info, DaemonInfo};
+use openfang_orchestrator::{InMemoryWorkflowStore, MockWorkflowExecutor, WorkflowEngine};
 use openfang_kernel::OpenFangKernel;
 use openfang_types::config::{DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use tower_http::trace::TraceLayer;
 fn test_daemon_info_serde_roundtrip() {
     let info = DaemonInfo {
         pid: 12345,
-        listen_addr: "127.0.0.1:4200".to_string(),
+        listen_addr: "127.0.0.1:50051".to_string(),
         started_at: "2024-01-01T00:00:00Z".to_string(),
         version: "0.1.0".to_string(),
         platform: "linux".to_string(),
@@ -33,7 +34,7 @@ fn test_daemon_info_serde_roundtrip() {
     let parsed: DaemonInfo = serde_json::from_str(&json).unwrap();
 
     assert_eq!(parsed.pid, 12345);
-    assert_eq!(parsed.listen_addr, "127.0.0.1:4200");
+    assert_eq!(parsed.listen_addr, "127.0.0.1:50051");
     assert_eq!(parsed.version, "0.1.0");
     assert_eq!(parsed.platform, "linux");
 }
@@ -105,9 +106,16 @@ async fn test_full_daemon_lifecycle() {
     let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
     let kernel = Arc::new(kernel);
     kernel.set_self_handle();
+    let orchestrator = Arc::new(WorkflowEngine::new(
+        Arc::new(InMemoryWorkflowStore::new()),
+        Arc::new(MockWorkflowExecutor),
+    ));
 
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
+        orchestrator,
+        local_capabilities: tokio::sync::RwLock::new(None),
+        local_status: tokio::sync::RwLock::new(openfang_api::local_inference::LocalModelStatus::default()),
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
@@ -115,6 +123,7 @@ async fn test_full_daemon_lifecycle() {
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        user_rate_limiter: openfang_api::rate_limiter::create_user_rate_limiter(),
     });
 
     let app = Router::new()
@@ -230,9 +239,16 @@ async fn test_server_immediate_responsiveness() {
 
     let kernel = OpenFangKernel::boot_with_config(config).unwrap();
     let kernel = Arc::new(kernel);
+    let orchestrator = Arc::new(WorkflowEngine::new(
+        Arc::new(InMemoryWorkflowStore::new()),
+        Arc::new(MockWorkflowExecutor),
+    ));
 
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
+        orchestrator,
+        local_capabilities: tokio::sync::RwLock::new(None),
+        local_status: tokio::sync::RwLock::new(openfang_api::local_inference::LocalModelStatus::default()),
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
@@ -240,6 +256,7 @@ async fn test_server_immediate_responsiveness() {
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        user_rate_limiter: openfang_api::rate_limiter::create_user_rate_limiter(),
     });
 
     let app = Router::new()
