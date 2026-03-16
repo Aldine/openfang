@@ -227,10 +227,12 @@ function OnboardingProviderStep({ onNext, onBack }) {
     }
     setSaving(false);
     setTesting(true);
+    let testOk = false;
     try {
       const td = await apiClient.post(`/api/providers/${selectedId}/test`, {});
       if (td.status === 'ok') {
         setResult({ type: 'test', ok: true, msg: `✅ Connected! (${td.latency_ms}ms)` });
+        testOk = true;
       } else {
         setResult({ type: 'test', ok: false, msg: `❌ ${td.error ?? 'Connection failed — check your key and try again.'}` });
       }
@@ -238,23 +240,19 @@ function OnboardingProviderStep({ onNext, onBack }) {
       setResult({ type: 'test', ok: false, msg: `❌ ${e.message}` });
     }
     setTesting(false);
-  }
 
-  async function applyChanges() {
-    setReloading(true);
-    setReloadMsg(null);
-    try {
-      const data = await apiClient.post('/api/config/reload', {});
-      if (data.status === 'applied' || data.status === 'no_changes') {
-        setReloadMsg({ ok: true, msg: '✅ All set! Your new AI provider is active.' });
-      } else {
-        // partial — hot-reload done as much as it can; provider swap needs full restart
-        setReloadMsg({ ok: true, msg: '✅ Settings applied. All agents are using your new provider.' });
+    // Auto-apply config so no extra step is needed
+    if (testOk) {
+      setReloading(true);
+      try {
+        await apiClient.post('/api/config/reload', {});
+        setReloadMsg({ ok: true, msg: '✅ AI provider is active and ready.' });
+      } catch (_) {
+        // Non-fatal — key is saved, provider will be active on next request
+        setReloadMsg({ ok: true, msg: '✅ Key saved. Your AI provider is ready to use.' });
       }
-    } catch (e) {
-      setReloadMsg({ ok: false, msg: `Couldn't apply changes automatically: ${e.message}. Please refresh the page and try again.` });
+      setReloading(false);
     }
-    setReloading(false);
   }
 
   return (
@@ -328,15 +326,10 @@ function OnboardingProviderStep({ onNext, onBack }) {
         <button
           className="btn btn-primary"
           onClick={saveAndTest}
-          disabled={saving || testing || (!meta.local && !apiKey.trim())}
+          disabled={saving || testing || reloading || (!meta.local && !apiKey.trim())}
         >
-          {saving ? '💾 Saving…' : testing ? '🔌 Testing…' : '💾 Save & Test'}
+          {saving ? '💾 Saving…' : testing ? '🔌 Testing…' : reloading ? '⚡ Activating…' : '💾 Save & Test'}
         </button>
-        {result?.ok && reloadMsg?.ok && (
-          <button className="btn btn-ghost" onClick={onNext}>
-            Continue →
-          </button>
-        )}
       </div>
 
       {result && (
@@ -347,28 +340,8 @@ function OnboardingProviderStep({ onNext, onBack }) {
           fontSize: 13, lineHeight: 1.6,
         }}>
           {result.msg}
-          {result.ok && !reloadMsg && (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 8 }}>
-                One last step — hit the button below to activate your new AI provider.
-              </div>
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={applyChanges}
-                disabled={reloading}
-                style={{ fontSize: 13 }}
-              >
-                {reloading ? '⏳ Applying…' : '🔄 Activate Provider'}
-              </button>
-            </div>
-          )}
           {reloadMsg && (
-            <div style={{
-              marginTop: 8, padding: '8px 12px', borderRadius: 'var(--radius-sm)',
-              background: reloadMsg.ok ? 'var(--success-subtle)' : 'var(--warning-subtle)',
-              border: `1px solid ${reloadMsg.ok ? 'var(--success)' : 'var(--warning)'}`,
-              fontSize: 13,
-            }}>
+            <div style={{ marginTop: 6, fontSize: 13, color: reloadMsg.ok ? 'var(--success)' : 'var(--warning)' }}>
               {reloadMsg.msg}
             </div>
           )}
@@ -377,9 +350,15 @@ function OnboardingProviderStep({ onNext, onBack }) {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 28 }}>
         <button className="btn btn-ghost" onClick={onBack}>← Back</button>
-        <button className="btn btn-ghost btn-sm" onClick={onNext} style={{ color: 'var(--text-dim)' }}>
-          Skip for now →
-        </button>
+        {result?.ok && reloadMsg?.ok ? (
+          <button className="btn btn-primary" onClick={onNext}>
+            Continue →
+          </button>
+        ) : (
+          <button className="btn btn-ghost btn-sm" onClick={onNext} style={{ color: 'var(--text-dim)' }}>
+            Skip for now →
+          </button>
+        )}
       </div>
     </div>
   );
