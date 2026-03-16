@@ -19,7 +19,8 @@ export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { env } from '../../../../lib/env';
 
-const TIMEOUT_MS = 30_000; // 30 s — fast enough for onboarding UX
+// Use the same ceiling as the openfang-client (defaults to 120 s, configurable via env)
+const TIMEOUT_MS = env.OPENFANG_TIMEOUT_MS;
 
 async function fetchJSON(url, opts = {}) {
   const controller = new AbortController();
@@ -42,7 +43,7 @@ async function fetchJSON(url, opts = {}) {
   } catch (err) {
     if (err.name === 'AbortError') {
       throw new Error(
-        `AI took too long to respond (>${Math.round((opts.timeout ?? TIMEOUT_MS) / 1000)}s). ` +
+        `AI took too long to respond (>${Math.round(TIMEOUT_MS / 1000)}s). ` +
         'Your key is probably valid — the provider may be under load. ' +
         'Try "Skip for now" and come back, or try a different provider.',
       );
