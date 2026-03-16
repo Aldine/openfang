@@ -775,7 +775,7 @@ export default function OnboardingPage() {
         ════════════════════════════════════════════════════════════════ */}
         {step?.id === 'api-key' && (
           <OnboardingProviderStep
-            onNext={() => { setStatusChecked(false); goTo('check-status'); }}
+            onNext={() => goTo('first-message')}
             onBack={prev}
           />
         )}
