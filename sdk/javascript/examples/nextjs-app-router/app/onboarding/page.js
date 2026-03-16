@@ -192,6 +192,10 @@ function OnboardingProviderStep({ onNext, onBack }) {
   const [result,     setResult]     = useState(null); // { type: 'save'|'test', ok, msg }
   const [reloading,  setReloading]  = useState(false);
   const [reloadMsg,  setReloadMsg]  = useState(null); // { ok: bool, msg: string }
+  // Tracks whether this session already had a successful key setup (survives Back navigation)
+  const [sessionConfigured, setSessionConfigured] = useState(() => {
+    try { return sessionStorage.getItem('openfang-provider-configured') === '1'; } catch { return false; }
+  });
 
   const meta = ONBOARDING_PROVIDERS.find(p => p.id === selectedId) ?? ONBOARDING_PROVIDERS[0];
 
@@ -252,11 +256,20 @@ function OnboardingProviderStep({ onNext, onBack }) {
         setReloadMsg({ ok: true, msg: '✅ Key saved. Your AI provider is ready to use.' });
       }
       setReloading(false);
+      // Remember for this browser session so Back+return shows confirmation, not a blank form
+      try { sessionStorage.setItem('openfang-provider-configured', '1'); } catch { /* ignore */ }
+      setSessionConfigured(true);
     }
   }
 
   return (
     <div>
+      {sessionConfigured && !result && !reloadMsg && (
+        <Callout type="success" icon="✅">
+          <strong>Your AI provider is already connected.</strong><br />
+          You can test with a different key below, or click <strong>Continue →</strong> to move on.
+        </Callout>
+      )}
       <p style={{ color: 'var(--text-dim)', marginBottom: 20, fontSize: 15, lineHeight: 1.75 }}>
         Pick an AI provider, paste your key, and hit <strong style={{ color: 'var(--text)' }}>Save &amp; Test</strong>.
         Don't have a key yet? Click <strong>Get a key ↗</strong> next to the field — it only takes a minute.
@@ -350,7 +363,7 @@ function OnboardingProviderStep({ onNext, onBack }) {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 28 }}>
         <button className="btn btn-ghost" onClick={onBack}>← Back</button>
-        {result?.ok && reloadMsg?.ok ? (
+        {(result?.ok && reloadMsg?.ok) || sessionConfigured ? (
           <button className="btn btn-primary" onClick={onNext}>
             Continue →
           </button>
@@ -853,29 +866,39 @@ export default function OnboardingPage() {
                     <strong>Something went wrong.</strong><br />
                     {sendError}<br />
                     <span style={{ fontSize: 12, marginTop: 6, display: 'block' }}>
-                      This usually means the AI key is not set up yet.
-                      Go back to <strong>Step 4 (Connect AI)</strong> for instructions,
-                      or ask the person who set up this app for help.
+                      Your AI key is saved — this may be a temporary connection hiccup.
+                      Try sending the message again, or skip this step and come back later.
                     </span>
                   </Callout>
                 )}
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}>
                   <button className="btn btn-ghost" onClick={prev}>← Back</button>
-                  <button
-                    className="btn btn-primary"
-                    disabled={!firstMessage.trim() || sending}
-                    onClick={sendFirstMessage}
-                    style={{ minWidth: 120 }}
-                    data-cy="onboarding-send"
-                  >
-                    {sending ? (
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
-                        Thinking…
-                      </span>
-                    ) : 'Send →'}
-                  </button>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    {sendError && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => goTo('done')}
+                        style={{ color: 'var(--text-dim)' }}
+                      >
+                        Skip for now →
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-primary"
+                      disabled={!firstMessage.trim() || sending}
+                      onClick={sendFirstMessage}
+                      style={{ minWidth: 120 }}
+                      data-cy="onboarding-send"
+                    >
+                      {sending ? (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                          Thinking…
+                        </span>
+                      ) : sendError ? 'Try again →' : 'Send →'}
+                    </button>
+                  </div>
                 </div>
               </>
             ) : (
