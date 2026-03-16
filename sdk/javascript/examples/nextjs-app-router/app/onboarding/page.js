@@ -508,6 +508,7 @@ export default function OnboardingPage() {
   const [firstMessage, setFirstMessage] = useState('');
   const [firstReply,   setFirstReply]   = useState(null);
   const [sending,      setSending]      = useState(false);
+  const [sendElapsed,  setSendElapsed]  = useState(0);   // live second counter shown in button
   const [sendError,    setSendError]    = useState(null);
   const [runId,        setRunId]        = useState(null);
 
@@ -555,56 +556,31 @@ export default function OnboardingPage() {
   const sendFirstMessage = useCallback(async () => {
     if (!firstMessage.trim() || sending) return;
     setSending(true);
+    setSendElapsed(0);
     setSendError(null);
     setFirstReply(null);
+
+    // Live elapsed-seconds counter so users can see the AI is working
+    const elapsedTimer = setInterval(() => setSendElapsed(s => s + 1), 1000);
+
     try {
-      const r = await fetch('/api/runs', {
+      // Use the direct onboarding/message route — one synchronous HTTP request to the
+      // daemon, no run-store / event-bus indirection. Avoids CJS/ESM singleton splits
+      // that caused the event bus to be silent on SSE connections.
+      const r = await fetch('/api/onboarding/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: firstMessage.trim(), sessionId: 'onboarding' }),
+        body: JSON.stringify({ message: firstMessage.trim() }),
       });
-      if (!r.ok) throw new Error(`Server returned ${r.status}`);
       const data = await r.json();
-      if (!data.runId) throw new Error(data.error || 'No run ID returned.');
-      setRunId(data.runId);
-
-      // Subscribe to the SSE event stream instead of polling — resolves the moment
-      // the run completes with no fixed timeout ceiling.
-      await new Promise((resolve, reject) => {
-        // 90-second wall-clock guard (generous — aligns with OPENFANG_TIMEOUT_MS)
-        const deadline = setTimeout(() => {
-          es.close();
-          reject(new Error('The AI is taking too long to reply. The API key may not be set up yet — ask the person who installed this app for help.'));
-        }, 90_000);
-
-        const es = new EventSource(`/api/runs/${data.runId}/events`);
-
-        es.onmessage = (evt) => {
-          let event;
-          try { event = JSON.parse(evt.data); } catch { return; }
-
-          if (event.type === 'run.completed' && event.runId === data.runId) {
-            clearTimeout(deadline);
-            es.close();
-            setFirstReply(String(event.output ?? ''));
-            resolve();
-          } else if (event.type === 'run.failed' && event.runId === data.runId) {
-            clearTimeout(deadline);
-            es.close();
-            reject(new Error(event.error || 'The AI returned an error. It may not be connected yet.'));
-          }
-        };
-
-        es.onerror = () => {
-          clearTimeout(deadline);
-          es.close();
-          reject(new Error('Lost connection to the AI. Check the backend is running and try again.'));
-        };
-      });
+      if (!r.ok || data.error) throw new Error(data.error || `Server error ${r.status}`);
+      setFirstReply(String(data.reply ?? ''));
     } catch (err) {
       setSendError(err.message);
+    } finally {
+      clearInterval(elapsedTimer);
+      setSending(false);
     }
-    setSending(false);
   }, [firstMessage, sending]);
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -1021,7 +997,7 @@ export default function OnboardingPage() {
                       {sending ? (
                         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
-                          Thinking…
+                          {sendElapsed < 3 ? 'Thinking…' : `Thinking… ${sendElapsed}s`}
                         </span>
                       ) : sendError ? 'Try again →' : 'Send →'}
                     </button>
