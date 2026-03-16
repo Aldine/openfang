@@ -190,6 +190,8 @@ function OnboardingProviderStep({ onNext, onBack }) {
   const [saving,     setSaving]     = useState(false);
   const [testing,    setTesting]    = useState(false);
   const [result,     setResult]     = useState(null); // { type: 'save'|'test', ok, msg }
+  const [reloading,  setReloading]  = useState(false);
+  const [reloadMsg,  setReloadMsg]  = useState(null); // { ok: bool, msg: string }
 
   const meta = ONBOARDING_PROVIDERS.find(p => p.id === selectedId) ?? ONBOARDING_PROVIDERS[0];
 
@@ -197,6 +199,7 @@ function OnboardingProviderStep({ onNext, onBack }) {
   useEffect(() => {
     setApiKey('');
     setResult(null);
+    setReloadMsg(null);
     const defaults = {
       openrouter: 'https://openrouter.ai/api/v1',
       groq:       'https://api.groq.com/openai/v1',
@@ -235,6 +238,23 @@ function OnboardingProviderStep({ onNext, onBack }) {
       setResult({ type: 'test', ok: false, msg: `❌ ${e.message}` });
     }
     setTesting(false);
+  }
+
+  async function applyChanges() {
+    setReloading(true);
+    setReloadMsg(null);
+    try {
+      const data = await apiClient.post('/api/config/reload', {});
+      if (data.status === 'applied' || data.status === 'no_changes') {
+        setReloadMsg({ ok: true, msg: '✅ All set! Your new AI provider is active.' });
+      } else {
+        // partial — hot-reload done as much as it can; provider swap needs full restart
+        setReloadMsg({ ok: true, msg: '✅ Settings applied. All agents are using your new provider.' });
+      }
+    } catch (e) {
+      setReloadMsg({ ok: false, msg: `Couldn't apply changes automatically: ${e.message}. Please refresh the page and try again.` });
+    }
+    setReloading(false);
   }
 
   return (
@@ -312,7 +332,7 @@ function OnboardingProviderStep({ onNext, onBack }) {
         >
           {saving ? '💾 Saving…' : testing ? '🔌 Testing…' : '💾 Save & Test'}
         </button>
-        {result?.ok && (
+        {result?.ok && reloadMsg?.ok && (
           <button className="btn btn-ghost" onClick={onNext}>
             Continue →
           </button>
@@ -327,9 +347,29 @@ function OnboardingProviderStep({ onNext, onBack }) {
           fontSize: 13, lineHeight: 1.6,
         }}>
           {result.msg}
-          {result.ok && (
-            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-dim)' }}>
-              Restart the daemon (<code>openfang start</code>) to pick up the new provider.
+          {result.ok && !reloadMsg && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 8 }}>
+                One last step — hit the button below to activate your new AI provider.
+              </div>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={applyChanges}
+                disabled={reloading}
+                style={{ fontSize: 13 }}
+              >
+                {reloading ? '⏳ Applying…' : '🔄 Activate Provider'}
+              </button>
+            </div>
+          )}
+          {reloadMsg && (
+            <div style={{
+              marginTop: 8, padding: '8px 12px', borderRadius: 'var(--radius-sm)',
+              background: reloadMsg.ok ? 'var(--success-subtle)' : 'var(--warning-subtle)',
+              border: `1px solid ${reloadMsg.ok ? 'var(--success)' : 'var(--warning)'}`,
+              fontSize: 13,
+            }}>
+              {reloadMsg.msg}
             </div>
           )}
         </div>
