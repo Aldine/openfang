@@ -3,6 +3,7 @@ import { useState, useCallback } from 'react';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
 import SkillDrawer from './SkillDrawer';
+import InstallModal from './InstallModal';
 
 function normalizeSkill(raw, i) {
   return {
@@ -25,6 +26,7 @@ export default function SkillsClient({ initialSkills }) {
   const [selectedSkillName, setSelectedSkillName] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [togglePending, setTogglePending] = useState({});  // skillName → bool
+  const [modalOpen, setModalOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -118,6 +120,13 @@ export default function SkillsClient({ initialSkills }) {
           <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={loading}>
             {loading ? 'Loading…' : 'Refresh'}
           </button>
+          <button
+            data-cy="open-install-modal"
+            className="btn btn-primary btn-sm"
+            onClick={() => setModalOpen(true)}
+          >
+            + Install Skill
+          </button>
         </div>
       </div>
 
@@ -132,7 +141,7 @@ export default function SkillsClient({ initialSkills }) {
 
         {skills.length === 0 && !error && !loading && (
           <div data-cy="skills-empty" className="empty-state">
-            No skills installed. Add skill crates or plugins to your OpenFang config.
+            No skills installed. Use the <strong>+ Install Skill</strong> button to browse and install from the registry.
           </div>
         )}
 
@@ -214,6 +223,16 @@ export default function SkillsClient({ initialSkills }) {
           ))}
         </div>
       </div>
+      {modalOpen && (
+        <InstallModal
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+          onInstallSuccess={(name) => {
+            setModalOpen(false);
+            refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
