@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { apiClient } from '../../lib/api-client';
 import { track } from '../../lib/telemetry';
 import { validateSpawnName } from '../../lib/spawn-validation';
+import { deriveSuggestedSkills } from '../../lib/agent-skills';
 
 function normalizeEntry(raw) {
   return {
@@ -44,6 +45,59 @@ function patchTomlName(toml, newName) {
   return toml.replace(/^name\s*=\s*"[^"]*"/m, `name = "${safe}"`);
 }
 
+// ─── Bound Skills section (inline in DetailModal) ──────────────────────────
+function BoundSkillsSection({ bindings, suggested }) {
+  const items = bindings ?? suggested ?? [];
+  if (!items.length) return null;
+  const issuggested = !bindings?.length && !!suggested?.length;
+
+  return (
+    <section>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+        {issuggested ? 'Suggested Skills' : `Bound Skills (${items.length})`}
+      </div>
+      {issuggested && (
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', fontStyle: 'italic', marginBottom: 6 }}>
+          Derived from tool references — not yet explicitly bound.
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {items.map(skill => (
+          <div
+            key={skill.name}
+            data-cy="bound-skill-row"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+              padding: '5px 10px',
+              background: 'var(--surface2)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: 12,
+            }}
+          >
+            <span style={{ fontFamily: 'var(--font-mono,monospace)', fontWeight: 600 }}>
+              {skill.name}
+            </span>
+            {skill.version && (
+              <span className="badge badge-dim" style={{ fontSize: 10, fontFamily: 'var(--font-mono,monospace)' }}>
+                v{skill.version}
+              </span>
+            )}
+            <span className={`badge ${skill.required === false ? 'badge-muted' : 'badge-info'}`} style={{ fontSize: 10 }}>
+              {skill.required === false ? 'optional' : 'required'}
+            </span>
+            {skill.suggested && (
+              <span className="badge badge-warning" style={{ fontSize: 10 }}>suggested</span>
+            )}
+            {skill.source && skill.source !== 'unknown' && (
+              <span className="badge badge-dim" style={{ fontSize: 10 }}>{skill.source}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // ─── Detail Modal ──────────────────────────────────────────────────────────
 function DetailModal({ entry, onClose, onSpawnSuccess }) {
   const [templateData, setTemplateData] = useState(null);
@@ -53,6 +107,9 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
   const [spawning, setSpawning] = useState(false);
   const [spawnError, setSpawnError] = useState('');
   const [promptExpanded, setPromptExpanded] = useState(false);
+  const [preflightResult, setPreflightResult] = useState(null);     // null | PreflightResult
+  const [preflightPending, setPreflightPending] = useState(false);
+  const [preflightWarningsAck, setPreflightWarningsAck] = useState(false);
   const nameRef = useRef(null);
 
   useEffect(() => {
@@ -95,11 +152,51 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
       setSpawnError('Template TOML not available. Cannot spawn.');
       return;
     }
+
+    const toml = patchTomlName(templateData.manifest_toml, name);
+
+    // ── Preflight ─────────────────────────────────────────────────────────
+    // Run preflight unless the user has already acknowledged warnings once.
+    if (!preflightWarningsAck) {
+      setPreflightPending(true);
+      setPreflightResult(null);
+      track('agent_preflight_started', { template: entry.name, name });
+      try {
+        const pf = await apiClient.post('/api/agents/preflight', { manifest_toml: toml });
+        setPreflightResult(pf);
+        setPreflightPending(false);
+
+        if (!pf.ok) {
+          track('agent_preflight_failed', {
+            template: entry.name,
+            name,
+            error_codes: pf.errors?.map(e => e.code),
+          });
+          return; // block spawn — user sees error list below
+        }
+
+        if (pf.warnings?.length > 0) {
+          track('agent_preflight_warned', {
+            template: entry.name,
+            name,
+            warning_codes: pf.warnings.map(w => w.code),
+          });
+          return; // show warnings — user must click "Spawn Anyway"
+        }
+
+        track('agent_preflight_passed', { template: entry.name, name });
+      } catch {
+        // Preflight endpoint unreachable — fail open and continue spawning.
+        // The spawn route itself also enforces preflight server-side.
+        setPreflightPending(false);
+      }
+    }
+
+    // ── Spawn ─────────────────────────────────────────────────────────────
     setSpawning(true);
     setSpawnError('');
     track('spawn_started', { template: entry.name, name });
     try {
-      const toml = patchTomlName(templateData.manifest_toml, name);
       const data = await apiClient.post('/api/agents/spawn', { manifest_toml: toml });
       const spawnedId = data?.agent_id ?? data?.id ?? '';
       track('spawn_succeeded', { template: entry.name, name, agentId: spawnedId });
@@ -119,6 +216,12 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
   const temperature = manifest?.model?.temperature ?? '—';
   const maxTokens = manifest?.model?.max_tokens ?? '—';
   const tools = manifest?.capabilities?.tools ?? [];
+  const boundSkills = manifest?.skills?.length
+    ? manifest.skills
+    : null;
+  const suggestedSkills = !boundSkills && templateData?.suggested_skills?.length
+    ? templateData.suggested_skills
+    : (!boundSkills && tools.length ? deriveSuggestedSkills(manifest) : null);
 
   return (
     <div
@@ -229,6 +332,9 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
                 </section>
               )}
 
+              {/* Bound Skills (Phase 4) */}
+              <BoundSkillsSection bindings={boundSkills} suggested={suggestedSkills} />
+
               {/* System prompt */}
               {systemPrompt && (
                 <section>
@@ -295,6 +401,48 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
               ⚠ {spawnError}
             </div>
           )}
+
+          {/* Preflight pending */}
+          {preflightPending && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-dim)' }}>
+              <div className="spinner" style={{ width: 12, height: 12 }} />
+              Checking skill dependencies…
+            </div>
+          )}
+
+          {/* Preflight blocking errors */}
+          {preflightResult && !preflightResult.ok && (
+            <div data-cy="preflight-error" style={{ fontSize: 12, color: 'var(--error, #f87171)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ fontWeight: 600 }}>⛔ Preflight failed — resolve these before spawning:</div>
+              {preflightResult.errors?.map((e, i) => (
+                <div key={i} style={{ paddingLeft: 12 }}>• {e.skill}: {e.message}</div>
+              ))}
+            </div>
+          )}
+
+          {/* Preflight warnings with acknowledgement */}
+          {preflightResult?.ok && preflightResult.warnings?.length > 0 && !preflightWarningsAck && (
+            <div data-cy="preflight-warning" style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ fontWeight: 600, color: 'var(--warning, #fbbf24)' }}>⚠ Skill warnings:</div>
+              {preflightResult.warnings.map((w, i) => (
+                <div key={i} style={{ paddingLeft: 12, color: 'var(--text-secondary)' }}>• {w.skill}: {w.message}</div>
+              ))}
+              <button
+                data-cy="spawn-anyway-btn"
+                className="btn btn-warning btn-sm"
+                onClick={() => { setPreflightWarningsAck(true); handleSpawn(); }}
+                style={{ alignSelf: 'flex-start', marginTop: 2 }}
+              >
+                Spawn Anyway
+              </button>
+            </div>
+          )}
+
+          {/* Preflight pass indicator */}
+          {preflightResult?.ok && !preflightResult.warnings?.length && (
+            <div style={{ fontSize: 12, color: 'var(--success, #4ade80)' }}>✓ Skill preflight passed</div>
+          )}
+
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input
               ref={nameRef}
@@ -320,7 +468,7 @@ function DetailModal({ entry, onClose, onSpawnSuccess }) {
               data-cy="spawn-btn"
               className="btn btn-primary btn-sm"
               onClick={handleSpawn}
-              disabled={spawning || loadingTemplate || !spawnName.trim()}
+              disabled={spawning || preflightPending || loadingTemplate || !spawnName.trim() || (preflightResult && !preflightResult.ok)}
               style={{ whiteSpace: 'nowrap', minWidth: 110 }}
             >
               {spawning ? (
