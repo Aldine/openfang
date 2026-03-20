@@ -28,7 +28,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /build/target/release/openfang /usr/local/bin/
 COPY --from=builder /build/agents /opt/openfang/agents
 EXPOSE 50051
-VOLUME /data
 ENV OPENFANG_HOME=/data
 ENTRYPOINT ["openfang"]
 CMD ["start"]
