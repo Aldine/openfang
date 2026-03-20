@@ -3,6 +3,7 @@
 //! Works with OpenAI, Ollama, vLLM, and any other OpenAI-compatible endpoint.
 
 use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent};
+use crate::think_filter::{FilterAction, StreamingThinkFilter};
 use async_trait::async_trait;
 use futures::StreamExt;
 use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
@@ -67,6 +68,31 @@ impl OpenAIDriver {
         self
     }
 
+    fn should_use_ollama_native_api(&self, _request: &CompletionRequest) -> bool {
+        false
+    }
+
+    async fn complete_via_ollama_native(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<CompletionResponse, LlmError> {
+        Err(LlmError::Api {
+            status: 501,
+            message: "Ollama native API not implemented".to_string(),
+        })
+    }
+
+    async fn stream_via_ollama_native(
+        &self,
+        _request: CompletionRequest,
+        _tx: tokio::sync::mpsc::Sender<StreamEvent>,
+    ) -> Result<CompletionResponse, LlmError> {
+        Err(LlmError::Api {
+            status: 501,
+            message: "Ollama native streaming not implemented".to_string(),
+        })
+    }
+
     /// Build the chat completions URL for the given model.
     ///
     /// Standard OpenAI: `{base_url}/chat/completions`
@@ -123,6 +149,8 @@ struct OaiRequest {
     /// Request usage stats in streaming responses (OpenAI extension, supported by Groq et al).
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<serde_json::Value>,
 }
 
 /// Returns true if a model uses `max_completion_tokens` instead of `max_tokens`.
@@ -171,6 +199,8 @@ struct OaiMessage {
     tool_calls: Option<Vec<OaiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
 }
 
 /// Content can be a plain string or an array of content parts (for images).
@@ -240,6 +270,8 @@ struct OaiChoice {
 struct OaiResponseMessage {
     content: Option<String>,
     tool_calls: Option<Vec<OaiToolCall>>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -264,6 +296,7 @@ impl LlmDriver for OpenAIDriver {
                 content: Some(OaiMessageContent::Text(system.clone())),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             });
         }
 
@@ -277,6 +310,7 @@ impl LlmDriver for OpenAIDriver {
                             content: Some(OaiMessageContent::Text(text.clone())),
                             tool_calls: None,
                             tool_call_id: None,
+                            reasoning_content: None,
                         });
                     }
                 }
@@ -286,6 +320,7 @@ impl LlmDriver for OpenAIDriver {
                         content: Some(OaiMessageContent::Text(text.clone())),
                         tool_calls: None,
                         tool_call_id: None,
+                        reasoning_content: None,
                     });
                 }
                 (Role::Assistant, MessageContent::Text(text)) => {
@@ -294,6 +329,7 @@ impl LlmDriver for OpenAIDriver {
                         content: Some(OaiMessageContent::Text(text.clone())),
                         tool_calls: None,
                         tool_call_id: None,
+                        reasoning_content: None,
                     });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
@@ -317,9 +353,10 @@ impl LlmDriver for OpenAIDriver {
                                     })),
                                     tool_calls: None,
                                     tool_call_id: Some(tool_use_id.clone()),
+                                    reasoning_content: None,
                                 });
                             }
-                            ContentBlock::Text { text } => {
+                            ContentBlock::Text { text, .. } => {
                                 parts.push(OaiContentPart::Text { text: text.clone() });
                             }
                             ContentBlock::Image { media_type, data } => {
@@ -339,6 +376,7 @@ impl LlmDriver for OpenAIDriver {
                             content: Some(OaiMessageContent::Parts(parts)),
                             tool_calls: None,
                             tool_call_id: None,
+                            reasoning_content: None,
                         });
                     }
                 }
@@ -693,7 +731,7 @@ impl LlmDriver for OpenAIDriver {
                 }
             };
 
-            let usage = oai_response
+            let mut usage = oai_response
                 .usage
                 .map(|u| TokenUsage {
                     input_tokens: u.prompt_tokens,
@@ -744,6 +782,7 @@ impl LlmDriver for OpenAIDriver {
                 content: Some(OaiMessageContent::Text(system.clone())),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             });
         }
 
@@ -756,6 +795,7 @@ impl LlmDriver for OpenAIDriver {
                             content: Some(OaiMessageContent::Text(text.clone())),
                             tool_calls: None,
                             tool_call_id: None,
+                            reasoning_content: None,
                         });
                     }
                 }
@@ -765,6 +805,7 @@ impl LlmDriver for OpenAIDriver {
                         content: Some(OaiMessageContent::Text(text.clone())),
                         tool_calls: None,
                         tool_call_id: None,
+                        reasoning_content: None,
                     });
                 }
                 (Role::Assistant, MessageContent::Text(text)) => {
@@ -773,6 +814,7 @@ impl LlmDriver for OpenAIDriver {
                         content: Some(OaiMessageContent::Text(text.clone())),
                         tool_calls: None,
                         tool_call_id: None,
+                        reasoning_content: None,
                     });
                 }
                 (Role::User, MessageContent::Blocks(blocks)) => {
@@ -792,6 +834,7 @@ impl LlmDriver for OpenAIDriver {
                                 })),
                                 tool_calls: None,
                                 tool_call_id: Some(tool_use_id.clone()),
+                                reasoning_content: None,
                             });
                         }
                     }
@@ -1054,6 +1097,8 @@ impl LlmDriver for OpenAIDriver {
             let mut usage = TokenUsage::default();
             let mut chunk_count: u32 = 0;
             let mut sse_line_count: u32 = 0;
+            let mut think_filter = StreamingThinkFilter::new();
+            let mut reasoning_content = String::new();
 
             let mut byte_stream = resp.bytes_stream();
             while let Some(chunk_result) = byte_stream.next().await {
@@ -1131,7 +1176,7 @@ impl LlmDriver for OpenAIDriver {
                                 reasoning_content.push_str(reasoning);
                                 let _ = tx
                                     .send(StreamEvent::TextDelta {
-                                        text: text.to_string(),
+                                        text: reasoning.to_string(),
                                     })
                                     .await;
                             }
@@ -1478,6 +1523,7 @@ fn parse_groq_failed_tool_call(body: &str) -> Option<CompletionResponse> {
             return Some(CompletionResponse {
                 content: vec![ContentBlock::Text {
                     text: failed.to_string(),
+                    provider_metadata: None,
                 }],
                 tool_calls: vec![],
                 stop_reason: StopReason::EndTurn,

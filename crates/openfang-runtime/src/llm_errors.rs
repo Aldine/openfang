@@ -346,7 +346,7 @@ pub fn classify_error(message: &str, status: Option<u16>) -> ClassifiedError {
 /// Produce a user-friendly error message.
 ///
 /// Maps each category to a human-readable description, capped at 200 chars.
-pub fn sanitize_for_user(category: LlmErrorCategory, _raw: &str) -> String {
+pub fn sanitize_for_user(category: LlmErrorCategory, raw: &str) -> String {
     let msg = match category {
         LlmErrorCategory::RateLimit => {
             "The AI provider is rate-limiting requests. Retrying shortly..."
@@ -391,7 +391,7 @@ pub fn sanitize_for_user(category: LlmErrorCategory, _raw: &str) -> String {
         }
     } else {
         // Include the sanitized detail — cap total at 300 chars.
-        let full = format!("{prefix}: {detail}");
+        let full = format!("{msg}: {detail}");
         cap_message(&full, 300)
     }
 }
@@ -488,8 +488,6 @@ fn cap_message(msg: &str, max: usize) -> String {
             .map(|(i, _)| i)
             .unwrap_or(msg.len());
         format!("{}...", &msg[..end])
-    } else {
-        msg.to_string()
     }
 }
 

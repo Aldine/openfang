@@ -681,6 +681,7 @@ impl OpenFangKernel {
                             .resolve(env_var)
                             .map(|z: zeroize::Zeroizing<String>| z.to_string()),
                         base_url: config.provider_urls.get(provider).cloned(),
+                        skip_permissions: false,
                     };
                     match drivers::create_driver(&auto_config) {
                         Ok(d) => {
@@ -728,6 +729,7 @@ impl OpenFangKernel {
                     .base_url
                     .clone()
                     .or_else(|| config.provider_urls.get(&fb.provider).cloned()),
+                skip_permissions: false,
             };
             match drivers::create_driver(&fb_config) {
                 Ok(d) => {
@@ -904,21 +906,21 @@ impl OpenFangKernel {
                     info!("Embedding driver disabled by config");
                     None
                 } else {
-                    configured_model.as_str()
-                };
-                let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
-                let custom_url = config
-                    .provider_urls
-                    .get(provider.as_str())
-                    .map(|s| s.as_str());
-                match create_embedding_driver(provider, model, api_key_env, custom_url) {
-                    Ok(d) => {
-                        info!(provider = %provider, model = %model, "Embedding driver configured from memory config");
-                        Some(Arc::from(d))
-                    }
-                    Err(e) => {
-                        warn!(provider = %provider, error = %e, "Embedding driver init failed — falling back to text search");
-                        None
+                    let model = configured_model.as_str();
+                    let api_key_env = config.memory.embedding_api_key_env.as_deref().unwrap_or("");
+                    let custom_url = config
+                        .provider_urls
+                        .get(provider.as_str())
+                        .map(|s| s.as_str());
+                    match create_embedding_driver(provider, model, api_key_env, custom_url) {
+                        Ok(d) => {
+                            info!(provider = %provider, model = %model, "Embedding driver configured from memory config");
+                            Some(Arc::from(d))
+                        }
+                        Err(e) => {
+                            warn!(provider = %provider, error = %e, "Embedding driver init failed — falling back to text search");
+                            None
+                        }
                     }
                 }
             } else if std::env::var("OPENAI_API_KEY").is_ok() {
@@ -1094,6 +1096,7 @@ impl OpenFangKernel {
             self_handle: OnceLock::new(),
             swarm_registry: Arc::new(crate::swarm_registry::SwarmRegistry::new()),
             tool_registry: Arc::new(crate::tool_registry::ToolRegistry::new().with_builtin_contracts()),
+            agent_msg_locks: dashmap::DashMap::new(),
         };
 
         // Restore persisted agents from SQLite
@@ -2044,6 +2047,10 @@ impl OpenFangKernel {
                 ),
                 sender_id,
                 sender_name,
+                is_developer_task,
+                requires_hardening,
+                requires_security_review,
+                memory_item_limit: 0,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -2607,6 +2614,10 @@ impl OpenFangKernel {
                 ),
                 sender_id,
                 sender_name,
+                is_developer_task,
+                requires_hardening,
+                requires_security_review,
+                memory_item_limit: 0,
             };
             manifest.model.system_prompt =
                 openfang_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
@@ -3919,6 +3930,10 @@ impl OpenFangKernel {
         if !saved_hands.is_empty() {
             info!("Restoring {} persisted hand(s)", saved_hands.len());
             for (hand_id, config) in saved_hands {
+                let old_agent_id = config
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok());
                 match self.activate_hand(&hand_id, config) {
                     Ok(inst) => {
                         info!(hand = %hand_id, instance = %inst.instance_id, "Hand restored");
@@ -4748,6 +4763,7 @@ impl OpenFangKernel {
         // vault → dotenv → env var chain. This ensures API keys saved at
         // runtime (via dashboard or vault) are picked up immediately.
         let primary = {
+            let effective_default = &self.config.default_model;
             let api_key = if has_custom_key {
                 manifest
                     .model
@@ -4784,6 +4800,7 @@ impl OpenFangKernel {
                 provider: agent_provider.clone(),
                 api_key,
                 base_url,
+                skip_permissions: false,
             };
 
             drivers::create_driver(&driver_config).map_err(|e| {
@@ -4813,6 +4830,7 @@ impl OpenFangKernel {
                         .base_url
                         .clone()
                         .or_else(|| self.config.provider_urls.get(&fb.provider).cloned()),
+                    skip_permissions: false,
                 };
                 match drivers::create_driver(&config) {
                     Ok(d) => chain.push((d, strip_provider_prefix(&fb.model, &fb.provider))),
@@ -5713,7 +5731,7 @@ async fn execute_cron_job(kernel: Arc<OpenFangKernel>, job: openfang_types::sche
             let kh: Arc<dyn openfang_runtime::kernel_handle::KernelHandle> = kernel.clone();
             match tokio::time::timeout(
                 timeout,
-                kernel.send_message_with_handle(agent_id, message, Some(kh)),
+                kernel.send_message_with_handle(agent_id, message, Some(kh), None, None),
             )
             .await
             {
@@ -5732,6 +5750,59 @@ async fn execute_cron_job(kernel: Arc<OpenFangKernel>, job: openfang_types::sche
                     kernel.cron_scheduler.record_failure(
                         job_id,
                         &format!("timed out after {timeout_s}s"),
+                    );
+                }
+            }
+        }
+        openfang_types::scheduler::CronAction::WorkflowRun {
+            workflow_id,
+            input,
+            timeout_secs,
+        } => {
+            tracing::debug!(job = %job_name, workflow = %workflow_id, "Cron: firing workflow run");
+            let wf_input = input.clone().unwrap_or_default();
+            let timeout_s = timeout_secs.unwrap_or(120);
+            let timeout = std::time::Duration::from_secs(timeout_s);
+            let delivery = job.delivery.clone();
+
+            let wf_id = match uuid::Uuid::parse_str(workflow_id) {
+                Ok(uuid) => crate::workflow::WorkflowId(uuid),
+                Err(_) => {
+                    let all_wfs = kernel.workflows.list_workflows().await;
+                    if let Some(wf) = all_wfs.iter().find(|w| w.name == *workflow_id) {
+                        wf.id
+                    } else {
+                        let err_msg = format!("workflow not found: {workflow_id}");
+                        tracing::warn!(job = %job_name, %err_msg);
+                        kernel.cron_scheduler.record_failure(job_id, &err_msg);
+                        return;
+                    }
+                }
+            };
+
+            match tokio::time::timeout(timeout, kernel.run_workflow(wf_id, wf_input)).await {
+                Ok(Ok((_run_id, output))) => {
+                    match cron_deliver_response(&kernel, agent_id, &output, &delivery).await {
+                        Ok(()) => {
+                            tracing::info!(job = %job_name, "Cron workflow completed");
+                            kernel.cron_scheduler.record_success(job_id);
+                        }
+                        Err(e) => {
+                            tracing::warn!(job = %job_name, error = %e, "Cron workflow delivery failed");
+                            kernel.cron_scheduler.record_failure(job_id, &e);
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    let err_msg = format!("{e}");
+                    tracing::warn!(job = %job_name, error = %err_msg, "Cron workflow failed");
+                    kernel.cron_scheduler.record_failure(job_id, &err_msg);
+                }
+                Err(_) => {
+                    tracing::warn!(job = %job_name, timeout_s, "Cron workflow timed out");
+                    kernel.cron_scheduler.record_failure(
+                        job_id,
+                        &format!("workflow timed out after {timeout_s}s"),
                     );
                 }
             }
@@ -5763,7 +5834,7 @@ async fn cron_deliver_response(
                 .structured_set(agent_id, "delivery.last_channel", kv_val);
             // Deliver via the registered channel adapter
             kernel
-                .send_channel_message(channel, to, response, None)
+                .send_channel_message(channel, to, response)
                 .await
                 .map(|_| {
                     tracing::info!(channel = %channel, to = %to, "Cron: delivered to channel");
@@ -5783,7 +5854,7 @@ async fn cron_deliver_response(
                     let recipient = val["recipient"].as_str().unwrap_or("");
                     if !channel.is_empty() && !recipient.is_empty() {
                         kernel
-                            .send_channel_message(channel, recipient, response, None)
+                            .send_channel_message(channel, recipient, response)
                             .await
                             .map(|_| {
                                 tracing::info!(channel = %channel, recipient = %recipient, "Cron: delivered to last channel");
@@ -6329,17 +6400,10 @@ impl KernelHandle for OpenFangKernel {
 
         let content = openfang_channels::types::ChannelContent::Text(formatted);
 
-        if let Some(tid) = thread_id {
-            adapter
-                .send_in_thread(&user, content, tid)
-                .await
-                .map_err(|e| format!("Channel send failed: {e}"))?;
-        } else {
-            adapter
-                .send(&user, content)
-                .await
-                .map_err(|e| format!("Channel send failed: {e}"))?;
-        }
+        adapter
+            .send(&user, content)
+            .await
+            .map_err(|e| format!("Channel send failed: {e}"))?;
 
         Ok(format!("Message sent to {} via {}", recipient, channel))
     }

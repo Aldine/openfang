@@ -73,6 +73,7 @@ impl TelegramAdapter {
         &self,
         chat_id: i64,
         text: &str,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "https://api.telegram.org/bot{}/sendMessage",
@@ -87,11 +88,14 @@ impl TelegramAdapter {
         // Telegram has a 4096 character limit per message — split if needed
         let chunks = split_message(&sanitized, 4096);
         for chunk in chunks {
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "chat_id": chat_id,
                 "text": chunk,
                 "parse_mode": "HTML",
             });
+            if let Some(tid) = thread_id {
+                body["message_thread_id"] = serde_json::json!(tid);
+            }
 
             let resp = self.client.post(&url).json(&body).send().await?;
             let status = resp.status();
@@ -109,8 +113,9 @@ impl TelegramAdapter {
         chat_id: i64,
         photo_url: &str,
         caption: Option<&str>,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let url = format!("{}/bot{}/sendPhoto", self.api_base_url, self.token.as_str());
+        let url = format!("https://api.telegram.org/bot{}/sendPhoto", self.token.as_str());
         let mut body = serde_json::json!({
             "chat_id": chat_id,
             "photo": photo_url,
@@ -118,6 +123,9 @@ impl TelegramAdapter {
         if let Some(cap) = caption {
             body["caption"] = serde_json::Value::String(cap.to_string());
             body["parse_mode"] = serde_json::Value::String("HTML".to_string());
+        }
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
         }
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
@@ -133,20 +141,54 @@ impl TelegramAdapter {
         chat_id: i64,
         document_url: &str,
         filename: &str,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "https://api.telegram.org/bot{}/sendDocument",
             self.token.as_str()
         );
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "chat_id": chat_id,
             "document": document_url,
             "caption": filename,
         });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
             let body_text = resp.text().await.unwrap_or_default();
             warn!("Telegram sendDocument failed: {body_text}");
+        }
+        Ok(())
+    }
+
+    /// Upload binary file data as a document via multipart/form-data.
+    async fn api_send_document_upload(
+        &self,
+        chat_id: i64,
+        data: Vec<u8>,
+        filename: &str,
+        mime_type: &str,
+        thread_id: Option<i64>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendDocument",
+            self.token.as_str()
+        );
+        let part = reqwest::multipart::Part::bytes(data)
+            .file_name(filename.to_string())
+            .mime_str(mime_type)?;
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("document", part);
+        if let Some(tid) = thread_id {
+            form = form.text("message_thread_id", tid.to_string());
+        }
+        let resp = self.client.post(&url).multipart(form).send().await?;
+        if !resp.status().is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            warn!("Telegram sendDocument (upload) failed: {body_text}");
         }
         Ok(())
     }
@@ -156,12 +198,16 @@ impl TelegramAdapter {
         &self,
         chat_id: i64,
         voice_url: &str,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let url = format!("{}/bot{}/sendVoice", self.api_base_url, self.token.as_str());
+        let url = format!("https://api.telegram.org/bot{}/sendVoice", self.token.as_str());
         let mut body = serde_json::json!({
             "chat_id": chat_id,
             "voice": voice_url,
         });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
             let body_text = resp.text().await.unwrap_or_default();
@@ -176,16 +222,20 @@ impl TelegramAdapter {
         chat_id: i64,
         lat: f64,
         lon: f64,
+        thread_id: Option<i64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let url = format!(
             "https://api.telegram.org/bot{}/sendLocation",
             self.token.as_str()
         );
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "chat_id": chat_id,
             "latitude": lat,
             "longitude": lon,
         });
+        if let Some(tid) = thread_id {
+            body["message_thread_id"] = serde_json::json!(tid);
+        }
         let resp = self.client.post(&url).json(&body).send().await?;
         if !resp.status().is_success() {
             let body_text = resp.text().await.unwrap_or_default();
@@ -217,6 +267,7 @@ impl TelegramAdapter {
                 _ => {}
             }
         });
+        Ok(())
     }
 }
 
@@ -226,6 +277,7 @@ impl TelegramAdapter {
     /// Both `send()` and `send_in_thread()` delegate here. When `thread_id` is
     /// `Some(id)`, every outbound Telegram API call includes `message_thread_id`
     /// so the message lands in the correct forum topic.
+    #[allow(dead_code)]
     async fn send_content(
         &self,
         user: &ChannelUser,
@@ -317,6 +369,7 @@ impl ChannelAdapter for TelegramAdapter {
         let client = self.client.clone();
         let allowed_users = self.allowed_users.clone();
         let poll_interval = self.poll_interval;
+        let bot_name_opt = Some(bot_name);
         let mut shutdown = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
@@ -429,14 +482,12 @@ impl ChannelAdapter for TelegramAdapter {
                     }
 
                     // Parse the message
-                    let bot_uname = bot_username.read().await.clone();
                     let msg = match parse_telegram_update(
                         update,
                         &allowed_users,
                         token.as_str(),
                         &client,
-                        &api_base_url,
-                        bot_uname.as_deref(),
+                        bot_name_opt.as_deref(),
                     )
                     .await
                     {
@@ -478,24 +529,32 @@ impl ChannelAdapter for TelegramAdapter {
 
         match content {
             ChannelContent::Text(text) => {
-                self.api_send_message(chat_id, &text).await?;
+                self.api_send_message(chat_id, &text, None).await?;
             }
             ChannelContent::Image { url, caption } => {
-                self.api_send_photo(chat_id, &url, caption.as_deref())
+                self.api_send_photo(chat_id, &url, caption.as_deref(), None)
                     .await?;
             }
             ChannelContent::File { url, filename } => {
-                self.api_send_document(chat_id, &url, &filename).await?;
+                self.api_send_document(chat_id, &url, &filename, None).await?;
+            }
+            ChannelContent::FileData {
+                data,
+                filename,
+                mime_type,
+            } => {
+                self.api_send_document_upload(chat_id, data, &filename, &mime_type, None)
+                    .await?;
             }
             ChannelContent::Voice { url, .. } => {
-                self.api_send_voice(chat_id, &url).await?;
+                self.api_send_voice(chat_id, &url, None).await?;
             }
             ChannelContent::Location { lat, lon } => {
-                self.api_send_location(chat_id, lat, lon).await?;
+                self.api_send_location(chat_id, lat, lon, None).await?;
             }
             ChannelContent::Command { name, args } => {
                 let text = format!("/{name} {}", args.join(" "));
-                self.api_send_message(chat_id, text.trim()).await?;
+                self.api_send_message(chat_id, text.trim(), None).await?;
             }
         }
         Ok(())
@@ -535,7 +594,7 @@ async fn telegram_get_file_url(
         return None;
     }
     let file_path = body["result"]["file_path"].as_str()?;
-    Some(format!("{api_base_url}/file/bot{token}/{file_path}"))
+    Some(format!("https://api.telegram.org/file/bot{token}/{file_path}"))
 }
 
 async fn parse_telegram_update(
@@ -543,6 +602,7 @@ async fn parse_telegram_update(
     allowed_users: &[String],
     token: &str,
     client: &reqwest::Client,
+    bot_username: Option<&str>,
 ) -> Option<ChannelMessage> {
     let update_id = update["update_id"].as_i64().unwrap_or(0);
     let message = match update
@@ -597,13 +657,6 @@ async fn parse_telegram_update(
     }
 
     let chat_id = message["chat"]["id"].as_i64()?;
-    let first_name = from["first_name"].as_str().unwrap_or("Unknown");
-    let last_name = from["last_name"].as_str().unwrap_or("");
-    let display_name = if last_name.is_empty() {
-        first_name.to_string()
-    } else {
-        format!("{first_name} {last_name}")
-    };
 
     let chat_type = message["chat"]["type"].as_str().unwrap_or("private");
     let is_group = chat_type == "group" || chat_type == "supergroup";
@@ -720,7 +773,7 @@ async fn parse_telegram_update(
 
     // Extract forum topic thread_id (Telegram sends this as `message_thread_id`
     // for messages inside forum topics / reply threads).
-    let thread_id = message["message_thread_id"]
+    let _thread_id = message["message_thread_id"]
         .as_i64()
         .map(|tid| tid.to_string());
 
@@ -765,6 +818,32 @@ async fn parse_telegram_update(
 /// Calculate exponential backoff capped at MAX_BACKOFF.
 pub fn calculate_backoff(current: Duration) -> Duration {
     (current * 2).min(MAX_BACKOFF)
+}
+
+/// Check if a message contains a mention of the given bot username in its entities.
+fn check_mention_entities(message: &serde_json::Value, bot_username: &str) -> bool {
+    let text = message["text"].as_str().unwrap_or("");
+    let target = format!("@{}", bot_username);
+    if text.contains(&target) {
+        return true;
+    }
+    // Also check entities array
+    if let Some(entities) = message["entities"].as_array() {
+        for entity in entities {
+            if entity["type"].as_str() == Some("mention") {
+                let offset = entity["offset"].as_u64().unwrap_or(0) as usize;
+                let length = entity["length"].as_u64().unwrap_or(0) as usize;
+                let chars: Vec<char> = text.chars().collect();
+                if offset + length <= chars.len() {
+                    let mention: String = chars[offset..offset + length].iter().collect();
+                    if mention.eq_ignore_ascii_case(&target) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Sanitize text for Telegram HTML parse mode.
@@ -863,7 +942,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
@@ -897,7 +976,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         match &msg.content {
@@ -931,8 +1010,7 @@ mod tests {
         let client = test_client();
 
         // Empty allowed_users = allow all
-        let msg =
-            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None).await;
         assert!(msg.is_some());
 
         // Non-matching allowed_users = filter out
@@ -942,7 +1020,6 @@ mod tests {
             &blocked,
             "fake:token",
             &client,
-            DEFAULT_API_URL,
             None,
         )
         .await;
@@ -955,7 +1032,6 @@ mod tests {
             &allowed,
             "fake:token",
             &client,
-            DEFAULT_API_URL,
             None,
         )
         .await;
@@ -984,7 +1060,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         assert_eq!(msg.channel, ChannelType::Telegram);
@@ -1022,7 +1098,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1048,7 +1124,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         assert!(matches!(msg.content, ChannelContent::Location { .. }));
@@ -1074,7 +1150,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         // With a fake token, getFile will fail, so we get a text fallback
@@ -1111,7 +1187,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1144,7 +1220,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1177,7 +1253,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         assert_eq!(msg.thread_id, Some("42".to_string()));
@@ -1199,7 +1275,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         assert_eq!(msg.thread_id, None);
@@ -1223,7 +1299,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         assert_eq!(msg.thread_id, Some("99".to_string()));
@@ -1248,7 +1324,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         assert_eq!(msg.sender.display_name, "My Channel");
@@ -1272,8 +1348,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg =
-            parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None).await;
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None).await;
         assert!(msg.is_none());
     }
 
@@ -1302,7 +1377,6 @@ mod tests {
             &[],
             "fake:token",
             &client,
-            DEFAULT_API_URL,
             Some("testbot"),
         )
         .await
@@ -1334,7 +1408,6 @@ mod tests {
             &[],
             "fake:token",
             &client,
-            DEFAULT_API_URL,
             Some("testbot"),
         )
         .await
@@ -1368,7 +1441,6 @@ mod tests {
             &[],
             "fake:token",
             &client,
-            DEFAULT_API_URL,
             Some("testbot"),
         )
         .await
@@ -1405,7 +1477,6 @@ mod tests {
             &[],
             "fake:token",
             &client,
-            DEFAULT_API_URL,
             Some("testbot"),
         )
         .await
@@ -1442,7 +1513,6 @@ mod tests {
             &[],
             "fake:token",
             &client,
-            DEFAULT_API_URL,
             Some("testbot"),
         )
         .await
@@ -1478,7 +1548,6 @@ mod tests {
             &[],
             "fake:token",
             &client,
-            DEFAULT_API_URL,
             Some("testbot"),
         )
         .await
@@ -1533,7 +1602,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1575,7 +1644,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1616,7 +1685,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1654,7 +1723,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         match &msg.content {
@@ -1681,7 +1750,7 @@ mod tests {
         });
 
         let client = test_client();
-        let msg = parse_telegram_update(&update, &[], "fake:token", &client, DEFAULT_API_URL, None)
+        let msg = parse_telegram_update(&update, &[], "fake:token", &client, None)
             .await
             .unwrap();
         match &msg.content {

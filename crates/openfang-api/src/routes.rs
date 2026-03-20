@@ -699,7 +699,10 @@ pub async fn get_agent_session(
                         let mut texts = Vec::new();
                         for b in blocks {
                             match b {
-                                openfang_types::message::ContentBlock::Text { text } => {
+                                openfang_types::message::ContentBlock::Text {
+                                    text,
+                                    ..
+                                } => {
                                     texts.push(text.clone());
                                 }
                                 openfang_types::message::ContentBlock::Image {
@@ -736,6 +739,7 @@ pub async fn get_agent_session(
                                     id,
                                     name,
                                     input,
+                                    ..
                                 } => {
                                     let tool_idx = tools.len();
                                     tools.push(serde_json::json!({
@@ -4166,7 +4170,9 @@ pub async fn list_hands(State(state): State<Arc<AppState>>) -> impl IntoResponse
                 "category": d.category,
                 "icon": d.icon,
                 "tools": d.tools,
-                "requirements_met": all_satisfied,
+                "requirements_met": requirements_met,
+                "active": active,
+                "degraded": degraded,
                 "requirements": reqs.iter().map(|(r, ok)| serde_json::json!({
                     "key": r.key,
                     "label": r.label,
@@ -4236,7 +4242,9 @@ pub async fn get_hand(
                     "category": def.category,
                     "icon": def.icon,
                     "tools": def.tools,
-                    "requirements_met": all_satisfied,
+                    "requirements_met": requirements_met,
+                    "active": active,
+                    "degraded": degraded,
                     "requirements": reqs.iter().map(|(r, ok)| {
                         let mut req_json = serde_json::json!({
                             "key": r.key,
@@ -4303,7 +4311,9 @@ pub async fn check_hand_deps(
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "hand_id": def.id,
-                    "requirements_met": all_satisfied,
+                    "requirements_met": requirements_met,
+                    "active": active,
+                    "degraded": degraded,
                     "server_platform": server_platform(),
                     "requirements": reqs.iter().map(|(r, ok)| {
                         let mut req_json = serde_json::json!({
@@ -7593,7 +7603,7 @@ async fn execute_agent_message(
     let kernel_handle: Arc<dyn KernelHandle> = state.kernel.clone() as Arc<dyn KernelHandle>;
     let result = state
         .kernel
-        .send_message_with_handle(agent_id, message, Some(kernel_handle))
+        .send_message_with_handle(agent_id, message, Some(kernel_handle), None, None)
         .await
         .map_err(|error| error.to_string())?;
 
@@ -9006,6 +9016,7 @@ pub async fn test_provider(
         } else {
             Some(base_url)
         },
+        skip_permissions: false,
     };
 
     match openfang_runtime::drivers::create_driver(&driver_config) {
@@ -10500,7 +10511,7 @@ pub async fn patch_agent_config(
                     }
                 } else {
                     // Provider is empty string — resolve from catalog
-                    if let Err(e) = state.kernel.set_agent_model(agent_id, new_model) {
+                    if let Err(e) = state.kernel.set_agent_model(agent_id, new_model, None) {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             Json(serde_json::json!({"error": format!("{e}")})),
@@ -10509,7 +10520,7 @@ pub async fn patch_agent_config(
                 }
             } else {
                 // No provider field at all — resolve from catalog
-                if let Err(e) = state.kernel.set_agent_model(agent_id, new_model) {
+                if let Err(e) = state.kernel.set_agent_model(agent_id, new_model, None) {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({"error": format!("{e}")})),
@@ -13103,152 +13114,147 @@ pub async fn comms_task(
     }
 }
 
-// ── Dashboard Authentication (username/password sessions) ──
+// ── Dashboard Authentication Compatibility Endpoints ──
 
-/// POST /api/auth/login — Authenticate with username/password, returns session token.
+/// POST /api/auth/login — legacy username/password login endpoint.
 pub async fn auth_login(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<serde_json::Value>,
-) -> axum::response::Response {
-    use axum::body::Body;
-    use axum::response::Response;
-
-    let auth_cfg = &state.kernel.config.auth;
-    if !auth_cfg.enabled {
-        return Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({"error": "Auth not enabled"}).to_string(),
-            ))
-            .unwrap();
-    }
-
-    let username = req.get("username").and_then(|v| v.as_str()).unwrap_or("");
-    let password = req.get("password").and_then(|v| v.as_str()).unwrap_or("");
-
-    // Constant-time username comparison to prevent timing attacks
-    let username_ok = {
-        use subtle::ConstantTimeEq;
-        let stored = auth_cfg.username.as_bytes();
-        let provided = username.as_bytes();
-        if stored.len() != provided.len() {
-            false
-        } else {
-            bool::from(stored.ct_eq(provided))
-        }
-    };
-
-    if !username_ok || !crate::session_auth::verify_password(password, &auth_cfg.password_hash) {
-        // Audit log the failed attempt
-        state.kernel.audit_log.record(
-            "system",
-            openfang_runtime::audit::AuditAction::AuthAttempt,
-            "dashboard login failed",
-            format!("username: {username}"),
-        );
-        return Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({"error": "Invalid credentials"}).to_string(),
-            ))
-            .unwrap();
-    }
-
-    // Derive the session secret the same way as server.rs
-    let api_key = state.kernel.config.api_key.trim().to_string();
-    let secret = if !api_key.is_empty() {
-        api_key
-    } else {
-        auth_cfg.password_hash.clone()
-    };
-
-    let token =
-        crate::session_auth::create_session_token(username, &secret, auth_cfg.session_ttl_hours);
-    let ttl_secs = auth_cfg.session_ttl_hours * 3600;
-    let cookie =
-        format!("openfang_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}");
-
-    state.kernel.audit_log.record(
-        "system",
-        openfang_runtime::audit::AuditAction::AuthAttempt,
-        "dashboard login success",
-        format!("username: {username}"),
-    );
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .header("set-cookie", &cookie)
-        .body(Body::from(
-            serde_json::json!({
-                "status": "ok",
-                "token": token,
-                "username": username,
-            })
-            .to_string(),
-        ))
-        .unwrap()
-}
-
-/// POST /api/auth/logout — Clear the session cookie.
-pub async fn auth_logout() -> impl IntoResponse {
-    let cookie = "openfang_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0";
-    (
-        StatusCode::OK,
-        [("content-type", "application/json"), ("set-cookie", cookie)],
-        serde_json::json!({"status": "ok"}).to_string(),
+    _request: Option<Json<serde_json::Value>>,
+) -> impl IntoResponse {
+    let mode = auth::auth_mode(&state);
+    ApiError::invalid_request(
+        format!(
+            "Password login is not available in the current auth mode ({mode}). Use /api/auth/github/start or bearer auth."
+        ),
+        None,
     )
+    .into_response()
 }
 
-/// GET /api/auth/check — Check current authentication state.
+/// GET /api/auth/check — compatibility alias for auth status.
 pub async fn auth_check(
     State(state): State<Arc<AppState>>,
     request: axum::http::Request<axum::body::Body>,
 ) -> impl IntoResponse {
-    let auth_cfg = &state.kernel.config.auth;
-    if !auth_cfg.enabled {
-        return Json(serde_json::json!({
-            "authenticated": true,
-            "mode": "none",
-        }));
-    }
+    let current_principal = auth::resolve_principal(request.headers(), request.uri(), &state)
+        .ok()
+        .flatten();
 
-    // Derive the session secret the same way as server.rs
-    let api_key = state.kernel.config.api_key.trim().to_string();
-    let secret = if !api_key.is_empty() {
-        api_key
-    } else {
-        auth_cfg.password_hash.clone()
-    };
+    Json(serde_json::json!({
+        "authenticated": current_principal.is_some(),
+        "mode": auth::auth_mode(&state),
+        "current_user": current_principal,
+    }))
+}
 
-    // Check session cookie
-    let session_user = request
-        .headers()
-        .get("cookie")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|c| {
-                c.trim()
-                    .strip_prefix("openfang_session=")
-                    .map(|v| v.to_string())
-            })
-        })
-        .and_then(|token| crate::session_auth::verify_session_token(&token, &secret));
-
-    if let Some(username) = session_user {
+fn not_implemented_response(endpoint: &str) -> axum::response::Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
         Json(serde_json::json!({
-            "authenticated": true,
-            "mode": "session",
-            "username": username,
-        }))
-    } else {
-        Json(serde_json::json!({
-            "authenticated": false,
-            "mode": "session",
-        }))
-    }
+            "error": format!("Endpoint not implemented: {endpoint}"),
+        })),
+    )
+        .into_response()
+}
+
+pub async fn list_work_items() -> impl IntoResponse {
+    not_implemented_response("list_work_items")
+}
+
+pub async fn create_work_item() -> impl IntoResponse {
+    not_implemented_response("create_work_item")
+}
+
+pub async fn get_work_summary() -> impl IntoResponse {
+    not_implemented_response("get_work_summary")
+}
+
+pub async fn get_work_item() -> impl IntoResponse {
+    not_implemented_response("get_work_item")
+}
+
+pub async fn run_work_item() -> impl IntoResponse {
+    not_implemented_response("run_work_item")
+}
+
+pub async fn approve_work_item() -> impl IntoResponse {
+    not_implemented_response("approve_work_item")
+}
+
+pub async fn reject_work_item() -> impl IntoResponse {
+    not_implemented_response("reject_work_item")
+}
+
+pub async fn cancel_work_item() -> impl IntoResponse {
+    not_implemented_response("cancel_work_item")
+}
+
+pub async fn retry_work_item() -> impl IntoResponse {
+    not_implemented_response("retry_work_item")
+}
+
+pub async fn list_work_events() -> impl IntoResponse {
+    not_implemented_response("list_work_events")
+}
+
+pub async fn delegate_work_item() -> impl IntoResponse {
+    not_implemented_response("delegate_work_item")
+}
+
+pub async fn get_agent_swarm_manifest() -> impl IntoResponse {
+    not_implemented_response("get_agent_swarm_manifest")
+}
+
+pub async fn validate_agent_swarm_manifest() -> impl IntoResponse {
+    not_implemented_response("validate_agent_swarm_manifest")
+}
+
+pub async fn get_swarm_plan() -> impl IntoResponse {
+    not_implemented_response("get_swarm_plan")
+}
+
+pub async fn get_work_swarm() -> impl IntoResponse {
+    not_implemented_response("get_work_swarm")
+}
+
+pub async fn list_swarm_agents() -> impl IntoResponse {
+    not_implemented_response("list_swarm_agents")
+}
+
+pub async fn get_orchestrator_status() -> impl IntoResponse {
+    not_implemented_response("get_orchestrator_status")
+}
+
+pub async fn get_orchestrator_runs() -> impl IntoResponse {
+    not_implemented_response("get_orchestrator_runs")
+}
+
+pub async fn post_orchestrator_heartbeat() -> impl IntoResponse {
+    not_implemented_response("post_orchestrator_heartbeat")
+}
+
+pub async fn get_research_control_plane() -> impl IntoResponse {
+    not_implemented_response("get_research_control_plane")
+}
+
+pub async fn put_research_control_plane() -> impl IntoResponse {
+    not_implemented_response("put_research_control_plane")
+}
+
+pub async fn list_research_experiments() -> impl IntoResponse {
+    not_implemented_response("list_research_experiments")
+}
+
+pub async fn run_research_experiment() -> impl IntoResponse {
+    not_implemented_response("run_research_experiment")
+}
+
+pub async fn get_research_experiment() -> impl IntoResponse {
+    not_implemented_response("get_research_experiment")
+}
+
+pub async fn list_research_patterns() -> impl IntoResponse {
+    not_implemented_response("list_research_patterns")
 }
 
 /// Remove a `[section]` and its contents from a TOML string.

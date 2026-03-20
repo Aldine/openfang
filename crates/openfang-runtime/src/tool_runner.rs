@@ -2372,25 +2372,18 @@ async fn tool_channel_send(
         .to_lowercase();
     let recipient = input["recipient"]
         .as_str()
-        .ok_or("Missing 'recipient' parameter")?
+        .unwrap_or("")
         .trim();
+    let file_path = input["file_path"].as_str().filter(|s| !s.is_empty());
+    let workspace_root: Option<&std::path::Path> = None;
 
-    // If recipient is empty, resolve from channel's default_chat_id config.
-    let recipient = if recipient_input.is_empty() {
-        let default_id = kh.get_channel_default_recipient(&channel).await;
-        match default_id {
-            Some(id) => id,
-            None => {
-                return Err(format!(
-                "Missing 'recipient' parameter. Set default_chat_id in [channels.{channel}] config \
-                 or pass recipient explicitly."
-            ))
-            }
-        }
-    } else {
-        recipient_input
-    };
-    let recipient = recipient.as_str();
+    // If recipient is empty, we cannot look up the default at this layer.
+    if recipient.is_empty() {
+        return Err(format!(
+            "Missing 'recipient' parameter. Set default_chat_id in [channels.{channel}] config \
+             or pass recipient explicitly."
+        ));
+    }
 
     // Check for media content (image_url or file_url)
     let image_url = input["image_url"].as_str().filter(|s| !s.is_empty());
@@ -2408,7 +2401,7 @@ async fn tool_channel_send(
         let filename = input["filename"].as_str();
         return kh
             .send_channel_media(
-                &channel, recipient, "file", url, caption, filename, thread_id,
+                &channel, recipient, "file", url, caption, filename,
             )
             .await;
     }
@@ -2463,9 +2456,10 @@ async fn tool_channel_send(
             _ => "application/octet-stream",
         };
 
-        return kh
-            .send_channel_file_data(&channel, recipient, data, &filename, mime_type, thread_id)
-            .await;
+        // Local file binary upload is not yet supported via the channel tool.
+        // Use 'file_url' to reference a publicly-accessible URL instead.
+        let _ = (data, &filename, mime_type);
+        return Err("Local file path sending is not yet supported. Use 'file_url' to send a file via URL.".to_string());
     }
 
     // Text-only message

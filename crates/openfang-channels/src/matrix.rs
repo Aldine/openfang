@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 const SYNC_TIMEOUT_MS: u64 = 30000;
@@ -173,6 +173,7 @@ async fn get_room_member_count(
 
 /// Do an initial /sync with timeout=0 to get the since token without processing events.
 /// This prevents replaying old messages when the adapter first connects.
+#[allow(dead_code)]
 async fn initial_sync(
     client: &reqwest::Client,
     homeserver: &str,
@@ -220,6 +221,7 @@ impl ChannelAdapter for MatrixAdapter {
         let client = self.client.clone();
         let since_token = Arc::clone(&self.since_token);
         let mut shutdown_rx = self.shutdown_rx.clone();
+        let auto_accept = true;
 
         tokio::spawn(async move {
             let mut backoff = Duration::from_secs(1);

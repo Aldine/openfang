@@ -86,7 +86,7 @@ impl CompletionResponse {
         self.content
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 ContentBlock::Thinking { .. } => None,
                 _ => None,
             })
@@ -178,6 +178,9 @@ pub struct DriverConfig {
     pub api_key: Option<String>,
     /// Base URL override.
     pub base_url: Option<String>,
+    /// Whether to skip interactive permission prompts (used by claude-code driver).
+    #[serde(default)]
+    pub skip_permissions: bool,
 }
 
 /// SECURITY: Custom Debug impl redacts the API key.
@@ -187,6 +190,7 @@ impl std::fmt::Debug for DriverConfig {
             .field("provider", &self.provider)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("base_url", &self.base_url)
+            .field("skip_permissions", &self.skip_permissions)
             .finish()
     }
 }

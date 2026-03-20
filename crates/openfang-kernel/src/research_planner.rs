@@ -176,7 +176,11 @@ impl ResearchPlanner {
             Ok(id) => id,
             Err(_) => return format!("[{role}] invalid agent_id: {agent_id_str}"),
         };
-        match self.kernel.send_message_with_handle(id, prompt, None).await {
+        match self
+            .kernel
+            .send_message_with_handle(id, prompt, None, None, None)
+            .await
+        {
             Ok(result) => result.response,
             Err(e) => format!("[{role}] agent call failed: {e}"),
         }

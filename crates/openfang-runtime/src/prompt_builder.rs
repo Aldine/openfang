@@ -8,6 +8,27 @@ use openfang_types::memory::{MemoryFragment, MemorySource};
 use tracing;
 
 // ---------------------------------------------------------------------------
+// Internal section type
+// ---------------------------------------------------------------------------
+
+struct PromptSection {
+    name: &'static str,
+    content: String,
+}
+
+pub struct PromptSectionTelemetry {
+    pub name: &'static str,
+    pub chars: usize,
+    pub estimated_tokens: usize,
+}
+
+pub struct PromptTelemetry {
+    pub total_chars: usize,
+    pub estimated_tokens: usize,
+    pub sections: Vec<PromptSectionTelemetry>,
+}
+
+// ---------------------------------------------------------------------------
 // H6: Prompt injection detection
 // ---------------------------------------------------------------------------
 
@@ -94,6 +115,28 @@ pub struct PromptContext {
     pub sender_id: Option<String>,
     /// Sender display name.
     pub sender_name: Option<String>,
+    /// Whether this is a developer/coding task (enables hardening section).
+    pub is_developer_task: bool,
+    /// Whether explicit production hardening is requested.
+    pub requires_hardening: bool,
+    /// Whether a security review pass is requested.
+    pub requires_security_review: bool,
+    /// Maximum number of memory items to inject into the prompt (0 = default 5).
+    pub memory_item_limit: usize,
+}
+
+impl PromptContext {
+    pub fn effective_peer_list_limit(&self) -> usize {
+        10
+    }
+
+    pub fn include_hardening_section(&self) -> bool {
+        self.is_developer_task || self.requires_hardening
+    }
+
+    pub fn effective_canonical_context_limit(&self) -> usize {
+        4000
+    }
 }
 
 /// Build the complete system prompt from a `PromptContext`.
@@ -237,7 +280,7 @@ fn collect_prompt_sections(ctx: &PromptContext) -> Vec<PromptSection> {
         if let Some(sender_line) =
             build_sender_section(ctx.sender_name.as_deref(), ctx.sender_id.as_deref())
         {
-            sections.push(sender_line);
+            push_section(&mut sections, "Sender Identity", sender_line);
         }
     }
 
@@ -522,29 +565,42 @@ fn omitted_memories_text(count: usize) -> String {
 /// Build the memory section (Section 4).
 ///
 /// Also used by `agent_loop.rs` to append recalled memories after DB lookup.
-pub fn build_memory_section(memories: &[(String, String)]) -> String {
-    let mut out = String::from("## Memory\n");
+pub fn build_memory_section(ctx: &PromptContext) -> String {
+    let memories = &ctx.recalled_memories;
+    let mut section = String::from("## Memory\n");
+
     if memories.is_empty() {
-        out.push_str(
+        section.push_str(
             "- When the user asks about something from a previous conversation, use memory_recall first.\n\
              - Store important preferences, decisions, and context with memory_store for future use.",
         );
-    } else {
-        out.push_str(
-            "- Use the recalled memories below to inform your responses.\n\
-             - Only call memory_recall if you need information not already shown here.\n\
-             - Store important preferences, decisions, and context with memory_store for future use.",
-        );
-        out.push_str("\n\nRecalled memories:\n");
-        for (key, content) in memories.iter().take(5) {
-            let capped = cap_str(content, 500);
-            if key.is_empty() {
-                out.push_str(&format!("- {capped}\n"));
-            } else {
-                lines.push(format!("- {}", content));
-            }
-        }
+        return section;
     }
+
+    section.push_str(
+        "- Use the recalled memories below to inform your responses.\n\
+         - Only call memory_recall if you need information not already shown here.\n\
+         - Store important preferences, decisions, and context with memory_store for future use.",
+    );
+
+    let limit = if ctx.memory_item_limit > 0 { ctx.memory_item_limit } else { 5 };
+    let total_count = memories.len();
+
+    let mut sorted = memories.clone();
+    rank_recalled_memories(&mut sorted);
+
+    let lines: Vec<String> = sorted
+        .iter()
+        .take(limit)
+        .map(|m| {
+            let capped = cap_str(&m.content, 500);
+            if m.scope.is_empty() {
+                format!("- {capped}")
+            } else {
+                format!("- [{}] {capped}", m.scope)
+            }
+        })
+        .collect();
 
     if lines.is_empty() {
         return section;
@@ -692,15 +748,15 @@ fn build_sender_section(sender_name: Option<&str>, sender_id: Option<&str>) -> O
     }
 }
 
-fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)]) -> String {
+fn build_peer_agents_section(self_name: &str, peers: &[(String, String, String)], limit: usize) -> String {
     let mut out = String::from(
         "## Peer Agents\n\
          You are part of a multi-agent system. These active agents are running alongside you:\n",
     );
-    for (name, _state, model) in active_peers.iter().take(visible_limit) {
+    for (name, _state, model) in peers.iter().take(limit) {
         out.push_str(&format!("- **{}** — model: {}\n", name, model));
     }
-    let overflow = active_peers.len().saturating_sub(visible_limit);
+    let overflow = peers.len().saturating_sub(limit);
     if overflow > 0 {
         out.push_str(&format!("- …and {overflow} more active peers\n"));
     }

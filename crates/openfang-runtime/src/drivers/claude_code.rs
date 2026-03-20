@@ -67,7 +67,7 @@ impl ClaudeCodeDriver {
     /// Create a new Claude Code driver.
     ///
     /// `cli_path` overrides the CLI binary path; defaults to `"claude"` on PATH.
-    pub fn new(cli_path: Option<String>) -> Self {
+    pub fn new(cli_path: Option<String>, skip_permissions: bool) -> Self {
         Self {
             cli_path: cli_path
                 .filter(|s| !s.is_empty())
@@ -313,7 +313,7 @@ impl LlmDriver for ClaudeCodeDriver {
             };
 
             return Err(LlmError::Api {
-                status: output.status.code().unwrap_or(1) as u16,
+                status: status.code().unwrap_or(1) as u16,
                 message: format!("Claude CLI failed: {stderr}"),
             });
         }

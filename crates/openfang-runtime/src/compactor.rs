@@ -360,7 +360,7 @@ fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> S
             MessageContent::Blocks(blocks) => {
                 for block in blocks {
                     match block {
-                        ContentBlock::Text { text } => {
+                        ContentBlock::Text { text, .. } => {
                             if !text.is_empty() {
                                 if oversized && text.len() > config.max_chunk_chars / 4 {
                                     let limit = config.max_chunk_chars / 4;
@@ -456,6 +456,7 @@ async fn summarize_messages(
             role: Role::User,
             content: MessageContent::Blocks(vec![ContentBlock::Text {
                 text: summarize_prompt,
+                provider_metadata: None,
             }]),
         }],
         tools: vec![],

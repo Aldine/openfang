@@ -1219,6 +1219,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_thread_ttl() -> u64 {
+    24
+}
+
 impl Default for KernelConfig {
     fn default() -> Self {
         let home_dir = openfang_home_dir();
@@ -1618,6 +1622,8 @@ pub struct TelegramConfig {
     pub allowed_users: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
+    /// Default chat ID to use when no explicit recipient is provided.
+    pub default_chat_id: Option<String>,
     /// Polling interval in seconds.
     pub poll_interval_secs: u64,
     /// Per-channel behavior overrides.
@@ -1631,6 +1637,7 @@ impl Default for TelegramConfig {
             bot_token_env: "TELEGRAM_BOT_TOKEN".to_string(),
             allowed_users: vec![],
             default_agent: None,
+            default_chat_id: None,
             poll_interval_secs: 1,
             overrides: ChannelOverrides::default(),
         }
@@ -1652,6 +1659,8 @@ pub struct DiscordConfig {
     pub allowed_users: Vec<String>,
     /// Default agent name to route messages to.
     pub default_agent: Option<String>,
+    /// Default channel ID to use when no explicit recipient is provided.
+    pub default_channel_id: Option<String>,
     /// Gateway intents bitmask (default: 37376 = GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT).
     pub intents: u64,
     /// Ignore messages from other bots (default: true).
@@ -1670,6 +1679,7 @@ impl Default for DiscordConfig {
             allowed_guilds: vec![],
             allowed_users: vec![],
             default_agent: None,
+            default_channel_id: None,
             intents: 37376,
             ignore_bots: true,
             overrides: ChannelOverrides::default(),

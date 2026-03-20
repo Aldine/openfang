@@ -492,7 +492,7 @@ fn is_empty_or_blank_content(content: &MessageContent) -> bool {
         MessageContent::Blocks(blocks) => {
             blocks.is_empty()
                 || blocks.iter().all(|b| match b {
-                    ContentBlock::Text { text } => text.trim().is_empty(),
+                    ContentBlock::Text { text, .. } => text.trim().is_empty(),
                     ContentBlock::Unknown => true,
                     _ => false,
                 })
@@ -630,7 +630,7 @@ pub fn prune_heartbeat_turns(messages: &mut Vec<Message>, keep_recent: usize) {
                 }
                 MessageContent::Blocks(blocks) => {
                     blocks.len() == 1
-                        && matches!(&blocks[0], ContentBlock::Text { text } if {
+                        && matches!(&blocks[0], ContentBlock::Text { text, .. } if {
                             let t = text.trim();
                             t == "NO_REPLY" || t == "[no reply needed]"
                         })

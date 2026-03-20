@@ -503,7 +503,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                                 let id_str = j.id.0.to_string();
                                 format!(
                                     "Job [{}] '{}' removed.",
-                                    safe_truncate_str(&id_str, 8),
+                                    openfang_types::truncate_str(&id_str, 8),
                                     j.name
                                 )
                             }
@@ -527,20 +527,54 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
                     0 => format!("No job found matching '{prefix}'."),
                     1 => {
                         let j = matched[0];
-                        let message = match &j.action {
+                        match &j.action {
                             openfang_types::scheduler::CronAction::AgentTurn {
                                 message, ..
-                            } => message.clone(),
-                            openfang_types::scheduler::CronAction::SystemEvent { text } => {
-                                text.clone()
                             }
-                        };
-                        match self.kernel.send_message(j.agent_id, &message).await {
-                            Ok(result) => {
-                                let id_short = &j.id.0.to_string()[..8];
-                                format!("Job [{id_short}] ran:\n{}", result.response)
+                            | openfang_types::scheduler::CronAction::SystemEvent {
+                                text: message,
+                            } => match self.kernel.send_message(j.agent_id, message).await {
+                                Ok(result) => {
+                                    let id_short = &j.id.0.to_string()[..8];
+                                    format!("Job [{id_short}] ran:\n{}", result.response)
+                                }
+                                Err(e) => format!("Failed to run job: {e}"),
+                            },
+                            openfang_types::scheduler::CronAction::WorkflowRun {
+                                workflow_id,
+                                input,
+                                ..
+                            } => {
+                                let resolved_workflow_id = match uuid::Uuid::parse_str(workflow_id) {
+                                    Ok(uuid) => openfang_kernel::workflow::WorkflowId(uuid),
+                                    Err(_) => {
+                                        let workflows = self.kernel.workflows.list_workflows().await;
+                                        if let Some(workflow) = workflows.iter().find(|w| w.name == *workflow_id) {
+                                            workflow.id
+                                        } else {
+                                            return format!("Workflow not found: {workflow_id}");
+                                        }
+                                    }
+                                };
+
+                                match self
+                                    .kernel
+                                    .run_workflow(
+                                        resolved_workflow_id,
+                                        input.clone().unwrap_or_default(),
+                                    )
+                                    .await
+                                {
+                                    Ok((run_id, output)) => {
+                                        let id_short = &j.id.0.to_string()[..8];
+                                        format!(
+                                            "Job [{id_short}] ran workflow [{}]:\n{}",
+                                            run_id, output
+                                        )
+                                    }
+                                    Err(e) => format!("Failed to run workflow job: {e}"),
+                                }
                             }
-                            Err(e) => format!("Failed to run job: {e}"),
                         }
                     }
                     n => format!("{n} jobs match '{prefix}'. Be more specific."),
@@ -641,7 +675,7 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             ));
         }
         self.kernel
-            .set_agent_model(agent_id, model)
+            .set_agent_model(agent_id, model, None)
             .map_err(|e| format!("{e}"))?;
         // Read back resolved model+provider from registry
         let entry = self
@@ -948,7 +982,7 @@ fn read_token(env_var: &str, adapter_name: &str) -> Option<String> {
     match std::env::var(env_var) {
         Ok(t) if !t.is_empty() => Some(t),
         Ok(_) => {
-            warn!("{adapter_name} token env var '{env_var_or_token}' is set but empty, skipping");
+            warn!("{adapter_name} token env var '{env_var}' is set but empty, skipping");
             None
         }
         Err(_) => {
@@ -1098,7 +1132,7 @@ pub async fn start_channel_bridge_with_config(
                 .with_gateway(gateway_url),
             );
             adapters.push((adapter, wa_config.default_agent.clone()));
-        }
+            }
     }
 
     // Signal

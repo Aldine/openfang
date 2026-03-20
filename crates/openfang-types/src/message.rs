@@ -42,6 +42,9 @@ pub enum ContentBlock {
     Text {
         /// The text content.
         text: String,
+        /// Optional provider-specific metadata (e.g. Anthropic cache_control).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<serde_json::Value>,
     },
     /// An inline base64-encoded image.
     #[serde(rename = "image")]
@@ -129,7 +132,7 @@ impl MessageContent {
             MessageContent::Blocks(blocks) => blocks
                 .iter()
                 .map(|b| match b {
-                    ContentBlock::Text { text } => text.len(),
+                    ContentBlock::Text { text, .. } => text.len(),
                     ContentBlock::ToolResult { content, .. } => content.len(),
                     ContentBlock::Thinking { thinking } => thinking.len(),
                     ContentBlock::ToolUse { .. }
@@ -147,7 +150,7 @@ impl MessageContent {
             MessageContent::Blocks(blocks) => blocks
                 .iter()
                 .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -170,6 +173,14 @@ impl Message {
         Self {
             role: Role::User,
             content: MessageContent::Text(content.into()),
+        }
+    }
+
+    /// Create a user message backed by structured content blocks.
+    pub fn user_with_blocks(blocks: Vec<ContentBlock>) -> Self {
+        Self {
+            role: Role::User,
+            content: MessageContent::Blocks(blocks),
         }
     }
 

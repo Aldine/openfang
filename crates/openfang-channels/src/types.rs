@@ -49,6 +49,12 @@ pub enum ChannelContent {
         url: String,
         filename: String,
     },
+    /// Binary file data (for platform-native uploads, e.g. Telegram multipart).
+    FileData {
+        data: Vec<u8>,
+        filename: String,
+        mime_type: String,
+    },
     Voice {
         url: String,
         duration_seconds: u32,

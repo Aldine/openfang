@@ -3,6 +3,9 @@
 //! Manages the agent execution loop, LLM driver abstraction,
 //! tool execution, and WASM sandboxing for untrusted skill/plugin code.
 
+/// HTTP user-agent string sent with API requests.
+pub const USER_AGENT: &str = concat!("openfang/", env!("CARGO_PKG_VERSION"));
+
 pub mod a2a;
 pub mod ai;
 pub mod agent_loop;
@@ -43,6 +46,7 @@ pub mod session_repair;
 pub mod shell_bleed;
 pub mod str_utils;
 pub mod subprocess_sandbox;
+pub mod think_filter;
 pub mod tool_policy;
 pub mod tool_runner;
 pub mod tts;

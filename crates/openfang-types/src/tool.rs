@@ -146,6 +146,7 @@ fn normalize_schema_recursive(schema: &serde_json::Value) -> serde_json::Value {
 /// If the schema has `$defs` and any property uses `$ref: "#/$defs/Foo"`,
 /// replace the `$ref` with the actual definition. This is needed because
 /// Gemini and most providers don't support `$ref`/`$defs`.
+#[allow(dead_code)]
 fn resolve_refs(obj: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
     let defs = match obj.get("$defs").and_then(|d| d.as_object()) {
         Some(d) => d.clone(),

@@ -17,7 +17,14 @@ use crate::SkillError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+/// Maximum number of retries for rate-limited / server-error responses.
+const MAX_RETRIES: u32 = 5;
+/// Initial backoff delay in milliseconds.
+const BASE_DELAY_MS: u64 = 500;
+/// Maximum backoff delay in milliseconds (30 seconds).
+const MAX_DELAY_MS: u64 = 30_000;
 
 // ---------------------------------------------------------------------------
 // API response types (matching actual ClawHub v1 API — verified Feb 2026)

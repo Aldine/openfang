@@ -228,7 +228,7 @@ impl WorkItemExecutor {
 
         let loop_result = self
             .kernel
-            .send_message_with_handle(agent_id, &prompt, None)
+            .send_message_with_handle(agent_id, &prompt, None, None, None)
             .await;
 
         let action_finished_at = Utc::now();

@@ -219,7 +219,7 @@ fn convert_messages(
                 let mut parts = Vec::new();
                 for block in blocks {
                     match block {
-                        ContentBlock::Text { text } => {
+                        ContentBlock::Text { text, .. } => {
                             parts.push(GeminiPart::Text { text: text.clone() });
                         }
                         ContentBlock::ToolUse { name, input, .. } => {
@@ -341,6 +341,7 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
                             // it gets echoed back on the next request.  Gemini
                             // 3.x thinking models include thoughtSignature on
                             // ALL parts (text + functionCall).
+                            let thought_signature: Option<String> = None;
                             let provider_metadata = thought_signature
                                 .map(|sig| serde_json::json!({ "thought_signature": sig }));
                             content.push(ContentBlock::Text {
@@ -355,6 +356,7 @@ fn convert_response(resp: GeminiResponse) -> Result<CompletionResponse, LlmError
                         // gets echoed back on the next request (Gemini 2.5+/3.x).
                         // The signature lives at the part level, not inside
                         // functionCall.
+                        let thought_signature = function_call.thought_signature.clone();
                         let provider_metadata = thought_signature
                             .map(|sig| serde_json::json!({ "thought_signature": sig }));
                         content.push(ContentBlock::ToolUse {
@@ -572,6 +574,7 @@ impl LlmDriver for GeminiDriver {
             // Parse SSE stream
             let mut buffer = String::new();
             let mut text_content = String::new();
+            let mut text_thought_sig: Option<String> = None;
             // Track function calls: (name, args_json)
             let mut fn_calls: Vec<(String, serde_json::Value)> = Vec::new();
             let mut finish_reason: Option<String> = None;

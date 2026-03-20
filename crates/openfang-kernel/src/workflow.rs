@@ -232,6 +232,17 @@ impl WorkflowEngine {
         self.workflows.read().await.get(&id).cloned()
     }
 
+    /// Update an existing workflow definition.
+    pub async fn update_workflow(&self, id: WorkflowId, workflow: Workflow) -> bool {
+        let mut workflows = self.workflows.write().await;
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = workflows.entry(id) {
+            entry.insert(workflow);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Remove a workflow definition.
     pub async fn remove_workflow(&self, id: WorkflowId) -> bool {
         self.workflows.write().await.remove(&id).is_some()

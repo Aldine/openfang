@@ -122,6 +122,15 @@ pub enum CronAction {
         /// Timeout in seconds (10..=600).
         timeout_secs: Option<u64>,
     },
+    /// Trigger a workflow run.
+    WorkflowRun {
+        /// ID of the workflow to execute.
+        workflow_id: String,
+        /// Optional input payload (max 4096 chars).
+        input: Option<String>,
+        /// Timeout in seconds (10..=3600).
+        timeout_secs: Option<u64>,
+    },
 }
 
 // ---------------------------------------------------------------------------

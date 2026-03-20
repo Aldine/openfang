@@ -820,6 +820,7 @@ pub async fn run_agent_loop(
                              all tool calls.]",
                             denial_count
                         ),
+                        provider_metadata: None,
                     });
                 }
 
@@ -838,6 +839,7 @@ pub async fn run_agent_loop(
                              alternatives instead of making up data.]",
                             non_denial_errors
                         ),
+                        provider_metadata: None,
                     });
                 }
 
@@ -1903,6 +1905,7 @@ pub async fn run_agent_loop_streaming(
                              all tool calls.]",
                             denial_count
                         ),
+                        provider_metadata: None,
                     });
                 }
 
@@ -1921,6 +1924,7 @@ pub async fn run_agent_loop_streaming(
                              alternatives instead of making up data.]",
                             non_denial_errors
                         ),
+                        provider_metadata: None,
                     });
                 }
 
@@ -2576,6 +2580,72 @@ fn recover_text_tool_calls(text: &str, available_tools: &[ToolDefinition]) -> Ve
     }
 
     calls
+}
+
+/// Parse a JSON object that looks like `{"name":"tool","arguments":{...}}`
+/// or `{"function":"tool","parameters":{...}}`.
+fn parse_json_tool_call_object(
+    s: &str,
+    tools: &[&str],
+) -> Option<(String, serde_json::Value)> {
+    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    let obj = v.as_object()?;
+    let name = obj
+        .get("name")
+        .or_else(|| obj.get("function"))
+        .and_then(|n| n.as_str())?
+        .to_string();
+    if !tools.contains(&name.as_str()) {
+        return None;
+    }
+    let input = obj
+        .get("arguments")
+        .or_else(|| obj.get("parameters"))
+        .or_else(|| obj.get("args"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    Some((name, input))
+}
+
+/// Parse arrow-syntax tool calls like `{tool => "name", args => {...}}`.
+fn parse_arrow_syntax_tool_call(
+    s: &str,
+    tools: &[&str],
+) -> Option<(String, serde_json::Value)> {
+    // Normalize arrow syntax to JSON
+    let normalized = s
+        .replace("=>", ":")
+        .replace("tool:", "\"tool\":")
+        .replace("args:", "\"args\":");
+    let v: serde_json::Value = serde_json::from_str(&normalized).ok()?;
+    let obj = v.as_object()?;
+    let name = obj.get("tool").and_then(|n| n.as_str())?.to_string();
+    if !tools.contains(&name.as_str()) {
+        return None;
+    }
+    let input = obj
+        .get("args")
+        .cloned()
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    Some((name, input))
+}
+
+/// Try to parse a bare JSON object as a tool call by checking if any
+/// top-level key matches a known tool name.
+fn try_parse_bare_json_tool_call(
+    s: &str,
+    tools: &[&str],
+) -> Option<(String, serde_json::Value)> {
+    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    let obj = v.as_object()?;
+    for tool_name in tools {
+        if obj.contains_key(*tool_name) {
+            let input = obj[*tool_name].clone();
+            return Some((tool_name.to_string(), input));
+        }
+    }
+    // Fallback: try standard JSON object parse
+    parse_json_tool_call_object(s, tools)
 }
 
 #[cfg(test)]

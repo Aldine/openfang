@@ -563,7 +563,7 @@ fn convert_message(msg: &Message) -> ApiMessage {
             let api_blocks: Vec<ApiContentBlock> = blocks
                 .iter()
                 .filter_map(|block| match block {
-                    ContentBlock::Text { text } => {
+                    ContentBlock::Text { text, .. } => {
                         Some(ApiContentBlock::Text { text: text.clone() })
                     }
                     ContentBlock::Image { media_type, data } => Some(ApiContentBlock::Image {

@@ -112,6 +112,7 @@ impl OllamaAdapter {
                 provider: "ollama".to_string(),
                 api_key: None,
                 base_url,
+                skip_permissions: false,
             },
             capabilities,
             telemetry: ProviderTelemetry {
@@ -132,6 +133,7 @@ impl OpenRouterAdapter {
                 provider: "openrouter".to_string(),
                 api_key,
                 base_url,
+                skip_permissions: false,
             },
             capabilities,
             telemetry: ProviderTelemetry {

@@ -7,11 +7,12 @@ use crate::types::{
     split_message, ChannelAdapter, ChannelContent, ChannelMessage, ChannelType, ChannelUser,
 };
 use async_trait::async_trait;
+use dashmap::DashMap;
 use futures::{SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroizing;
@@ -35,6 +36,7 @@ pub struct SlackAdapter {
     /// Threads where the bot was @-mentioned. Maps thread_ts -> last interaction time.
     active_threads: Arc<DashMap<String, Instant>>,
     /// How long to track a thread after last interaction.
+    #[allow(dead_code)]
     thread_ttl: Duration,
     /// Whether auto-thread-reply is enabled.
     auto_thread_reply: bool,
@@ -95,16 +97,20 @@ impl SlackAdapter {
         &self,
         channel_id: &str,
         text: &str,
+        thread_ts: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let chunks = split_message(text, SLACK_MSG_LIMIT);
 
         for chunk in chunks {
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "channel": channel_id,
                 "text": chunk,
                 "unfurl_links": self.unfurl_links,
                 "unfurl_media": self.unfurl_links,
             });
+            if let Some(ts) = thread_ts {
+                body["thread_ts"] = serde_json::Value::String(ts.to_string());
+            }
 
             let resp: serde_json::Value = self
                 .client
@@ -153,6 +159,8 @@ impl ChannelAdapter for SlackAdapter {
         let bot_user_id = self.bot_user_id.clone();
         let allowed_channels = self.allowed_channels.clone();
         let client = self.client.clone();
+        let active_threads = self.active_threads.clone();
+        let auto_thread_reply = self.auto_thread_reply;
         let mut shutdown = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
@@ -316,10 +324,10 @@ impl ChannelAdapter for SlackAdapter {
         let channel_id = &user.platform_id;
         match content {
             ChannelContent::Text(text) => {
-                self.api_send_message(channel_id, &text).await?;
+                self.api_send_message(channel_id, &text, None).await?;
             }
             _ => {
-                self.api_send_message(channel_id, "(Unsupported content type)")
+                self.api_send_message(channel_id, "(Unsupported content type)", None)
                     .await?;
             }
         }
@@ -382,6 +390,8 @@ async fn parse_slack_event(
     event: &serde_json::Value,
     bot_user_id: &Arc<RwLock<Option<String>>>,
     allowed_channels: &[String],
+    active_threads: &Arc<DashMap<String, Instant>>,
+    auto_thread_reply: bool,
 ) -> Option<ChannelMessage> {
     let event_type = event["type"].as_str()?;
     if event_type != "message" && event_type != "app_mention" {
@@ -462,7 +472,7 @@ async fn parse_slack_event(
 
     // Extract thread_id: threaded replies have `thread_ts`, top-level messages
     // use their own `ts` so the reply will start a thread under the original.
-    let thread_id = msg_data["thread_ts"]
+    let _thread_id = msg_data["thread_ts"]
         .as_str()
         .or_else(|| event["thread_ts"].as_str())
         .map(|s| s.to_string())
@@ -547,6 +557,7 @@ mod tests {
     #[tokio::test]
     async fn test_parse_slack_event_filters_bot() {
         let bot_id = Arc::new(RwLock::new(Some("B123".to_string())));
+        let active_threads = Arc::new(DashMap::new());
         let event = serde_json::json!({
             "type": "message",
             "user": "U456",
@@ -556,13 +567,14 @@ mod tests {
             "bot_id": "B999"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[]).await;
+        let msg = parse_slack_event(&event, &bot_id, &[], &active_threads, true).await;
         assert!(msg.is_none());
     }
 
     #[tokio::test]
     async fn test_parse_slack_event_filters_own_user() {
         let bot_id = Arc::new(RwLock::new(Some("U456".to_string())));
+        let active_threads = Arc::new(DashMap::new());
         let event = serde_json::json!({
             "type": "message",
             "user": "U456",
@@ -571,7 +583,7 @@ mod tests {
             "ts": "1700000000.000100"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[]).await;
+        let msg = parse_slack_event(&event, &bot_id, &[], &active_threads, true).await;
         assert!(msg.is_none());
     }
 
@@ -612,6 +624,7 @@ mod tests {
     #[tokio::test]
     async fn test_parse_slack_event_skips_other_subtypes() {
         let bot_id = Arc::new(RwLock::new(None));
+        let active_threads = Arc::new(DashMap::new());
         // Non-message_changed subtypes should still be filtered
         let event = serde_json::json!({
             "type": "message",
@@ -622,7 +635,7 @@ mod tests {
             "ts": "1700000000.000100"
         });
 
-        let msg = parse_slack_event(&event, &bot_id, &[]).await;
+        let msg = parse_slack_event(&event, &bot_id, &[], &active_threads, true).await;
         assert!(msg.is_none());
     }
 

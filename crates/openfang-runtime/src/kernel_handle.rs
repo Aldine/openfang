@@ -182,6 +182,12 @@ pub trait KernelHandle: Send + Sync {
         None
     }
 
+    /// Return the default recipient for a channel when configured.
+    async fn get_channel_default_recipient(&self, channel: &str) -> Option<String> {
+        let _ = channel;
+        None
+    }
+
     /// Send a message to a user on a named channel adapter (e.g., "email", "telegram").
     /// Returns a confirmation string on success.
     async fn send_channel_message(
@@ -206,9 +212,23 @@ pub trait KernelHandle: Send + Sync {
         filename: Option<&str>,
     ) -> Result<String, String> {
         let _ = (
-            channel, recipient, media_type, media_url, caption, filename, thread_id,
+            channel, recipient, media_type, media_url, caption, filename,
         );
         Err("Channel media send not available".to_string())
+    }
+
+    /// Send in-memory file data to a user on a named channel adapter.
+    async fn send_channel_file_data(
+        &self,
+        channel: &str,
+        recipient: &str,
+        data: Vec<u8>,
+        filename: &str,
+        mime_type: &str,
+        thread_id: Option<&str>,
+    ) -> Result<String, String> {
+        let _ = (channel, recipient, data, filename, mime_type, thread_id);
+        Err("Channel file data send not available".to_string())
     }
 
     /// Spawn an agent with capability inheritance enforcement.

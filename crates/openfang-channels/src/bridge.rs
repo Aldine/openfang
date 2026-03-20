@@ -5,7 +5,10 @@
 
 use crate::formatter;
 use crate::router::AgentRouter;
-use crate::types::{ChannelAdapter, ChannelContent, ChannelMessage, ChannelUser};
+use crate::types::{
+    default_phase_emoji, AgentPhase, ChannelAdapter, ChannelContent, ChannelMessage,
+    ChannelUser, LifecycleReaction,
+};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures::StreamExt;
@@ -25,6 +28,25 @@ use tracing::{debug, error, info, warn};
 pub trait ChannelBridgeHandle: Send + Sync {
     /// Send a message to an agent and get the text response.
     async fn send_message(&self, agent_id: AgentId, message: &str) -> Result<String, String>;
+
+    /// Send a multimodal message (content blocks) to an agent and get the text response.
+    ///
+    /// Default implementation extracts text from blocks and calls `send_message`.
+    async fn send_message_with_blocks(
+        &self,
+        agent_id: AgentId,
+        blocks: Vec<openfang_types::message::ContentBlock>,
+    ) -> Result<String, String> {
+        let text = blocks
+            .iter()
+            .filter_map(|b| match b {
+                openfang_types::message::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.send_message(agent_id, &text).await
+    }
 
     /// Find an agent by name, returning its ID.
     async fn find_agent_by_name(&self, name: &str) -> Result<Option<AgentId>, String>;
@@ -280,6 +302,7 @@ impl BridgeManager {
         let rate_limiter = self.rate_limiter.clone();
         let adapter_clone = adapter.clone();
         let mut shutdown = self.shutdown_rx.clone();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
 
         let task = tokio::spawn(async move {
             let mut stream = std::pin::pin!(stream);
@@ -504,10 +527,7 @@ async fn dispatch_message(
         .and_then(|o| o.output_format)
         .unwrap_or(channel_default_format);
     let threading_enabled = overrides.as_ref().map(|o| o.threading).unwrap_or(false);
-    let lifecycle_reactions = overrides
-        .as_ref()
-        .map(|o| o.lifecycle_reactions)
-        .unwrap_or(true);
+    let lifecycle_reactions = true;
     let thread_id = if threading_enabled {
         message.thread_id.as_deref()
     } else {
@@ -621,14 +641,16 @@ async fn dispatch_message(
             match caption {
                 Some(c) => format!("[User sent a photo: {url}]\nCaption: {c}"),
                 None => format!("[User sent a photo: {url}]"),
-            };
-            desc
+            }
         }
         ChannelContent::File {
             ref url,
             ref filename,
         } => {
             format!("[User sent a file ({filename}): {url}]")
+        }
+        ChannelContent::FileData { ref filename, .. } => {
+            format!("[User sent a file: {filename}]")
         }
         ChannelContent::Voice {
             ref url,
@@ -828,7 +850,6 @@ async fn dispatch_message(
                 &message.sender.platform_id,
                 true,
                 None,
-                thread_id,
             )
             .await;
         return;
@@ -864,7 +885,6 @@ async fn dispatch_message(
                     &message.sender.platform_id,
                     true,
                     None,
-                    thread_id,
                 )
                 .await;
         }
@@ -894,7 +914,6 @@ async fn dispatch_message(
                                 &message.sender.platform_id,
                                 true,
                                 None,
-                                thread_id,
                             )
                             .await;
                     }
@@ -927,7 +946,6 @@ async fn dispatch_message(
                                 &message.sender.platform_id,
                                 false,
                                 Some(&err_msg),
-                                thread_id,
                             )
                             .await;
                     }
@@ -957,7 +975,6 @@ async fn dispatch_message(
                     &message.sender.platform_id,
                     false,
                     Some(&err_msg),
-                    thread_id,
                 )
                 .await;
         }
@@ -1261,7 +1278,6 @@ async fn dispatch_with_blocks(
                     &message.sender.platform_id,
                     true,
                     None,
-                    thread_id,
                 )
                 .await;
         }
@@ -1291,7 +1307,6 @@ async fn dispatch_with_blocks(
                                 &message.sender.platform_id,
                                 true,
                                 None,
-                                thread_id,
                             )
                             .await;
                     }
@@ -1324,7 +1339,6 @@ async fn dispatch_with_blocks(
                                 &message.sender.platform_id,
                                 false,
                                 Some(&err_msg),
-                                thread_id,
                             )
                             .await;
                     }
@@ -1354,7 +1368,6 @@ async fn dispatch_with_blocks(
                     &message.sender.platform_id,
                     false,
                     Some(&err_msg),
-                    thread_id,
                 )
                 .await;
         }
