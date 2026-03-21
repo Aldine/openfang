@@ -80,6 +80,15 @@ tokio::task_local! {
     pub static CANVAS_MAX_BYTES: usize;
 }
 
+fn normalize_tool_name(tool_name: &str) -> &str {
+    match tool_name {
+        "fs-read" | "fs_read" => "file_read",
+        "fs-write" | "fs_write" => "file_write",
+        "fs-list" | "fs_list" => "file_list",
+        other => other,
+    }
+}
+
 /// Get the current inter-agent call depth from the task-local context.
 /// Returns 0 if called outside an agent task.
 pub fn current_agent_depth() -> u32 {
@@ -114,14 +123,16 @@ pub async fn execute_tool(
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
 ) -> ToolResult {
+    let canonical_tool_name = normalize_tool_name(tool_name);
+
     // Capability enforcement: reject tools not in the allowed list
     if let Some(allowed) = allowed_tools {
-        if !allowed.iter().any(|t| t == tool_name) {
-            warn!(tool_name, "Capability denied: tool not in allowed list");
+        if !allowed.iter().any(|t| t == canonical_tool_name) {
+            warn!(tool_name = canonical_tool_name, requested_tool_name = tool_name, "Capability denied: tool not in allowed list");
             return ToolResult {
                 tool_use_id: tool_use_id.to_string(),
                 content: format!(
-                    "Permission denied: agent does not have capability to use tool '{tool_name}'"
+                    "Permission denied: agent does not have capability to use tool '{canonical_tool_name}'"
                 ),
                 is_error: true,
             };
@@ -130,31 +141,34 @@ pub async fn execute_tool(
 
     // Approval gate: check if this tool requires human approval before execution
     if let Some(kh) = kernel {
-        if kh.requires_approval(tool_name) {
+        if kh.requires_approval(canonical_tool_name) {
             let agent_id_str = caller_agent_id.unwrap_or("unknown");
             let input_str = input.to_string();
             let summary = format!(
                 "{}: {}",
-                tool_name,
+                canonical_tool_name,
                 openfang_types::truncate_str(&input_str, 200)
             );
-            match kh.request_approval(agent_id_str, tool_name, &summary).await {
+            match kh
+                .request_approval(agent_id_str, canonical_tool_name, &summary)
+                .await
+            {
                 Ok(true) => {
-                    debug!(tool_name, "Approval granted — proceeding with execution");
+                    debug!(tool_name = canonical_tool_name, requested_tool_name = tool_name, "Approval granted — proceeding with execution");
                 }
                 Ok(false) => {
-                    warn!(tool_name, "Approval denied — blocking tool execution");
+                    warn!(tool_name = canonical_tool_name, requested_tool_name = tool_name, "Approval denied — blocking tool execution");
                     return ToolResult {
                         tool_use_id: tool_use_id.to_string(),
                         content: format!(
                             "Execution denied: '{}' requires human approval and was denied or timed out. The operation was not performed.",
-                            tool_name
+                            canonical_tool_name
                         ),
                         is_error: true,
                     };
                 }
                 Err(e) => {
-                    warn!(tool_name, error = %e, "Approval system error");
+                    warn!(tool_name = canonical_tool_name, requested_tool_name = tool_name, error = %e, "Approval system error");
                     return ToolResult {
                         tool_use_id: tool_use_id.to_string(),
                         content: format!("Approval system error: {e}"),
@@ -165,8 +179,8 @@ pub async fn execute_tool(
         }
     }
 
-    debug!(tool_name, "Executing tool");
-    let result = match tool_name {
+    debug!(tool_name = canonical_tool_name, requested_tool_name = tool_name, "Executing tool");
+    let result = match canonical_tool_name {
         // Filesystem tools
         "file_read" => tool_file_read(input, workspace_root).await,
         "file_write" => tool_file_write(input, workspace_root).await,
@@ -3833,7 +3847,8 @@ mod tests {
         )
         .await;
         assert!(result.is_error);
-        assert!(result.content.contains("Failed to read"));
+        assert!(result.content.contains("Permission denied"));
+        assert!(result.content.contains("file_write"));
     }
 
     // --- Schedule parser tests ---

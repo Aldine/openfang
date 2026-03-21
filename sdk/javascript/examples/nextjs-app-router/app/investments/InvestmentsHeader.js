@@ -16,7 +16,7 @@ export default function InvestmentsHeader({
             Investment Intelligence
           </h1>
           <p style={{ fontSize: 13, color: 'var(--text-dim)', maxWidth: 540 }}>
-            Track markets, watch patterns, update your thesis, and approve important decisions before anything moves.
+            Track markets, watch patterns, update your thesis, approve important decisions, and build the operating system behind your investment research.
           </p>
           {(watchCount > 0 || alertCount > 0) && (
             <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>

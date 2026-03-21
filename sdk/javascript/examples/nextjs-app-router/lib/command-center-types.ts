@@ -7,7 +7,7 @@ export type TaskStatus =
   | "completed"
   | "failed";
 
-export type ApprovalStatus = "none" | "pending" | "approved" | "rejected";
+export type ApprovalStatus = "none" | "pending" | "approved" | "rejected" | "changes_requested";
 
 export type TaskType =
   | "summarize_business"
@@ -41,6 +41,7 @@ export type PlannedTask = {
   title: string;
   type: TaskType;
   status: TaskStatus;
+  board_column?: "backlog" | "this_week" | "today" | "waiting" | "done";
   priority: "low" | "medium" | "high";
   assigned_agent: string;
   required_tools: string[];

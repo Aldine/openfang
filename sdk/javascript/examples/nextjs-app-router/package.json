@@ -33,14 +33,19 @@
     "desktop:dist": "electron-builder",
     "desktop:dist:mac": "electron-builder --mac",
     "desktop:dist:win": "electron-builder --win",
-    "desktop:dist:linux": "electron-builder --linux"
+    "desktop:dist:linux": "electron-builder --linux",
+    "mcp:investments": "node ./mcp/investments/server.mjs",
+    "mcp:investments:dev": "node --watch ./mcp/investments/server.mjs"
   },
   "dependencies": {
     "@capacitor/core": "8.2.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@openfang/sdk": "file:../..",
+    "express": "^5.2.1",
     "next": "15.3.1",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@capacitor/android": "8.2.0",
@@ -83,16 +88,24 @@
       "main": "electron/main.cjs"
     },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "build/icon.ico"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "build/icons"
     },
     "nsis": {

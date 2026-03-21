@@ -524,6 +524,23 @@ enum WorkflowCommands {
         /// Path to a JSON file describing the workflow.
         file: PathBuf,
     },
+    /// Get a workflow by ID.
+    Get {
+        /// Workflow ID (UUID).
+        workflow_id: String,
+    },
+    /// Update a workflow from a JSON file.
+    Update {
+        /// Workflow ID (UUID).
+        workflow_id: String,
+        /// Path to a JSON file describing the workflow.
+        file: PathBuf,
+    },
+    /// Delete a workflow by ID.
+    Delete {
+        /// Workflow ID (UUID).
+        workflow_id: String,
+    },
     /// Run a workflow by ID.
     Run {
         /// Workflow ID (UUID).
@@ -3134,7 +3151,7 @@ fn cmd_workflow_get(workflow_id: &str) {
     let client = daemon_client();
     let body = daemon_json(
         client
-            .get(format!("{base}/api/workflows/{workflow_id}"))
+            .get(format!("{base}/api/workflow-definitions/{workflow_id}"))
             .send(),
     );
 
@@ -3189,7 +3206,7 @@ fn cmd_workflow_update(workflow_id: &str, file: PathBuf) {
     let client = daemon_client();
     let body = daemon_json(
         client
-            .put(format!("{base}/api/workflows/{workflow_id}"))
+            .put(format!("{base}/api/workflow-definitions/{workflow_id}"))
             .json(&json_body)
             .send(),
     );
@@ -3211,7 +3228,7 @@ fn cmd_workflow_delete(workflow_id: &str) {
     let client = daemon_client();
     let body = daemon_json(
         client
-            .delete(format!("{base}/api/workflows/{workflow_id}"))
+            .delete(format!("{base}/api/workflow-definitions/{workflow_id}"))
             .send(),
     );
 

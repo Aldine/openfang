@@ -214,7 +214,7 @@ pub async fn start_orchestrated_workflow(
     }
 }
 
-/// POST /api/workflows/{run_id}/resume — Resume a workflow waiting on approval.
+/// POST /api/workflow-runs/{run_id}/resume — Resume a workflow waiting on approval.
 pub async fn resume_orchestrated_workflow(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
@@ -243,7 +243,7 @@ pub async fn resume_orchestrated_workflow(
     }
 }
 
-/// GET /api/workflows/{run_id} — Read workflow run status.
+/// GET /api/workflow-runs/{run_id} — Read workflow run status.
 pub async fn get_orchestrated_workflow_run(
     State(state): State<Arc<AppState>>,
     Path(run_id): Path<String>,
@@ -1174,7 +1174,7 @@ pub async fn list_workflow_runs(
     Json(list)
 }
 
-/// GET /api/workflows/:id — Get a single workflow by ID.
+/// GET /api/workflow-definitions/:id — Get a single workflow by ID.
 pub async fn get_workflow(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1207,7 +1207,7 @@ pub async fn get_workflow(
     }
 }
 
-/// PUT /api/workflows/:id — Update a workflow definition.
+/// PUT /api/workflow-definitions/:id — Update a workflow definition.
 pub async fn update_workflow(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1312,7 +1312,7 @@ pub async fn update_workflow(
     }
 }
 
-/// DELETE /api/workflows/:id — Delete a workflow definition.
+/// DELETE /api/workflow-definitions/:id — Delete a workflow definition.
 pub async fn delete_workflow(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

@@ -568,6 +568,28 @@ Returns an array of registered workflow summaries.
 ]
 ```
 
+#### `GET /api/workflow-definitions/:id` -- Read a workflow definition
+
+Returns the stored workflow definition for a specific workflow ID.
+
+#### `PUT /api/workflow-definitions/:id` -- Update a workflow definition
+
+Updates the stored workflow definition using the same payload shape as workflow creation.
+
+**Response (200 OK):**
+```json
+{ "status": "updated", "workflow_id": "<uuid>" }
+```
+
+#### `DELETE /api/workflow-definitions/:id` -- Delete a workflow definition
+
+Deletes a workflow definition by ID.
+
+**Response (200 OK):**
+```json
+{ "status": "removed", "workflow_id": "<uuid>" }
+```
+
 #### `POST /api/workflows/:id/run` -- Execute a workflow
 
 Start a synchronous workflow execution. The call blocks until the workflow completes or fails.

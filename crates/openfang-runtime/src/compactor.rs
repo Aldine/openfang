@@ -778,6 +778,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "Summary of conversation".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: openfang_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
@@ -839,6 +840,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "Summary with tools".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: openfang_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
@@ -930,6 +932,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "Summary: discussed topics 0 through 79".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: openfang_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
@@ -1125,6 +1128,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: format!("Chunk summary {n}"),
+                        provider_metadata: None,
                     }],
                     stop_reason: openfang_types::message::StopReason::EndTurn,
                     tool_calls: vec![],
@@ -1191,6 +1195,7 @@ mod tests {
                 content: MessageContent::Blocks(vec![
                     ContentBlock::Text {
                         text: "Let me search".to_string(),
+                        provider_metadata: None,
                     },
                     ContentBlock::ToolUse {
                         id: "tu-1".to_string(),

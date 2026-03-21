@@ -318,6 +318,61 @@ Create a new workflow definition.
 }
 ```
 
+### GET /api/workflow-definitions/{id}
+
+Read a workflow definition by ID.
+
+**Response** `200 OK`:
+
+```json
+{
+  "id": "w1b2c3d4-...",
+  "name": "code-review-pipeline",
+  "description": "Review a pull request across multiple specialist agents",
+  "steps": [
+    {
+      "name": "triage",
+      "agent_name": "reviewer",
+      "prompt": "Review this pull request: {{input}}",
+      "mode": "sequential",
+      "timeout_secs": 120,
+      "error_mode": "fail"
+    }
+  ],
+  "created_at": "2026-01-15T10:30:00Z"
+}
+```
+
+### PUT /api/workflow-definitions/{id}
+
+Update a workflow definition in place.
+
+**Request Body**:
+
+Same schema as `POST /api/workflows`.
+
+**Response** `200 OK`:
+
+```json
+{
+  "status": "updated",
+  "workflow_id": "w1b2c3d4-..."
+}
+```
+
+### DELETE /api/workflow-definitions/{id}
+
+Delete a workflow definition by ID.
+
+**Response** `200 OK`:
+
+```json
+{
+  "status": "removed",
+  "workflow_id": "w1b2c3d4-..."
+}
+```
+
 ### POST /api/workflows/{id}/run
 
 Execute a workflow.
@@ -2169,6 +2224,9 @@ The `Retry-After` header indicates the window duration in seconds.
 | **Workflows** | | |
 | GET | `/api/workflows` | List workflows |
 | POST | `/api/workflows` | Create workflow |
+| GET | `/api/workflow-definitions/{id}` | Get workflow definition |
+| PUT | `/api/workflow-definitions/{id}` | Update workflow definition |
+| DELETE | `/api/workflow-definitions/{id}` | Delete workflow definition |
 | POST | `/api/workflows/{id}/run` | Run workflow |
 | GET | `/api/workflows/{id}/runs` | List workflow runs |
 | **Triggers** | | |

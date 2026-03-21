@@ -1016,6 +1016,7 @@ mod tests {
                 role: Role::Assistant,
                 content: MessageContent::Blocks(vec![ContentBlock::Text {
                     text: String::new(),
+                    provider_metadata: None,
                 }]),
             },
             Message::user("Never mind"),

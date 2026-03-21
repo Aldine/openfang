@@ -6,7 +6,10 @@
 //!   PUT    /clients/:id
 //!   POST   /wizard/generate-plan
 //!   GET    /tasks            ?client_id=…
+//!   PATCH  /tasks/:id
 //!   POST   /tasks/:id/approve
+//!   POST   /tasks/:id/reject
+//!   POST   /tasks/:id/request-changes
 //!   POST   /tasks/:id/run
 //!   GET    /approvals        ?client_id=…
 //!   GET    /results          ?client_id=…
@@ -16,7 +19,7 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use chrono::Utc;
@@ -48,7 +51,10 @@ pub fn router(state: CommandCenterState) -> Router {
         .route("/clients/{id}",               get(get_client).put(update_client))
         .route("/wizard/generate-plan",      post(generate_plan))
         .route("/tasks",                     get(list_tasks))
+        .route("/tasks/{id}",                 patch(update_task))
         .route("/tasks/{id}/approve",         post(approve_task))
+        .route("/tasks/{id}/reject",          post(reject_task))
+        .route("/tasks/{id}/request-changes", post(request_changes_task))
         .route("/tasks/{id}/run",             post(run_task))
         .route("/approvals",                 get(list_approvals))
         .route("/results",                   get(list_results))
@@ -136,6 +142,7 @@ pub struct PlannedTask {
     pub title:            String,
     pub r#type:           TaskType,
     pub status:           String,
+    pub board_column:     String,
     pub priority:         String,
     pub assigned_agent:   String,
     pub required_tools:   Vec<String>,
@@ -174,6 +181,13 @@ pub struct GeneratePlanRequest {
     pub selected_task_types:  Vec<TaskType>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateTaskRequest {
+    pub status:         Option<String>,
+    pub board_column:   Option<String>,
+    pub assigned_agent: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ClientIdQuery {
     pub client_id: String,
@@ -185,8 +199,127 @@ pub struct ClientIdQuery {
 
 type JsonResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalDecision {
+    Approve,
+    Reject,
+    RequestChanges,
+}
+
 fn err(status: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({ "error": msg })))
+}
+
+fn sync_approval_items(store: &mut CommandCenterStore, task: &PlannedTask) {
+    for approval in store.approvals.values_mut() {
+        if approval.task_id == task.id {
+            approval.status = task.approval_status.clone();
+        }
+    }
+}
+
+fn apply_assignment(task: &mut PlannedTask, agent: String) {
+    task.assigned_agent = agent;
+}
+
+fn apply_board_move(task: &mut PlannedTask, column: &str) -> Result<(), String> {
+    match column {
+        "backlog" => {
+            task.board_column = "backlog".into();
+            task.status = if task.approval_required && task.approval_status == "approved" {
+                "approved".into()
+            } else {
+                "draft".into()
+            };
+        }
+        "this_week" => {
+            task.board_column = "this_week".into();
+            task.status = if task.approval_required && task.approval_status == "approved" {
+                "approved".into()
+            } else {
+                "draft".into()
+            };
+        }
+        "waiting" => {
+            if !task.approval_required {
+                return Err("Only approval-gated tasks can move to waiting".into());
+            }
+            task.board_column = "waiting".into();
+            task.status = "pending_approval".into();
+            task.approval_status = "pending".into();
+        }
+        "today" => {
+            if task.approval_required && task.approval_status != "approved" {
+                return Err("Task needs approval before moving to today".into());
+            }
+            task.board_column = "today".into();
+            task.status = if task.status == "running" {
+                "running".into()
+            } else {
+                "approved".into()
+            };
+        }
+        "done" => {
+            if task.approval_required && task.approval_status != "approved" {
+                return Err("Task needs approval before moving to done".into());
+            }
+            task.board_column = "done".into();
+            task.status = "completed".into();
+        }
+        _ => return Err("Unknown board column".into()),
+    }
+
+    Ok(())
+}
+
+fn apply_approval_decision(task: &mut PlannedTask, decision: ApprovalDecision) -> Result<(), String> {
+    if !task.approval_required {
+        return Err("Task does not require approval".into());
+    }
+
+    match decision {
+        ApprovalDecision::Approve => {
+            task.approval_status = "approved".into();
+            task.board_column = "today".into();
+            task.status = "approved".into();
+        }
+        ApprovalDecision::Reject => {
+            task.approval_status = "rejected".into();
+            task.board_column = "backlog".into();
+            task.status = "draft".into();
+        }
+        ApprovalDecision::RequestChanges => {
+            task.approval_status = "changes_requested".into();
+            task.board_column = "backlog".into();
+            task.status = "draft".into();
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_run_started(task: &mut PlannedTask) -> Result<(), String> {
+    if task.approval_required && task.approval_status != "approved" {
+        return Err("Task needs approval before run".into());
+    }
+
+    if task.status == "completed" {
+        return Err("Completed tasks cannot be run again".into());
+    }
+
+    if task.status != "approved" && task.status != "running" {
+        return Err("Only approved tasks can be run".into());
+    }
+
+    task.status = "running".into();
+    task.board_column = "today".into();
+
+    Ok(())
+}
+
+fn apply_run_completed(task: &mut PlannedTask) {
+    task.status = "completed".into();
+    task.board_column = "done".into();
 }
 
 async fn create_client(
@@ -316,6 +449,7 @@ async fn generate_plan(
             title: title.to_string(),
             r#type: task_type,
             status: if approval_required { "pending_approval".into() } else { "draft".into() },
+            board_column: if approval_required { "waiting".into() } else { "backlog".into() },
             priority: "high".into(),
             assigned_agent: agent.into(),
             required_tools: tools.clone(),
@@ -367,16 +501,75 @@ async fn approve_task(
     let task = store.tasks.get_mut(&id)
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "Task not found"))?;
 
-    task.approval_status = "approved".into();
-    task.status          = "approved".into();
-
-    for approval in store.approvals.values_mut() {
-        if approval.task_id == id {
-            approval.status = "approved".into();
-        }
-    }
+    apply_approval_decision(task, ApprovalDecision::Approve)
+        .map_err(|msg| err(StatusCode::CONFLICT, &msg))?;
+    let task = task.clone();
+    sync_approval_items(&mut store, &task);
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn reject_task(
+    State(state): State<CommandCenterState>,
+    Path(id): Path<String>,
+) -> JsonResult {
+    let mut store = state.write().await;
+    let task = store.tasks.get_mut(&id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Task not found"))?;
+
+    apply_approval_decision(task, ApprovalDecision::Reject)
+        .map_err(|msg| err(StatusCode::CONFLICT, &msg))?;
+    let task = task.clone();
+    sync_approval_items(&mut store, &task);
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn request_changes_task(
+    State(state): State<CommandCenterState>,
+    Path(id): Path<String>,
+) -> JsonResult {
+    let mut store = state.write().await;
+    let task = store.tasks.get_mut(&id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Task not found"))?;
+
+    apply_approval_decision(task, ApprovalDecision::RequestChanges)
+        .map_err(|msg| err(StatusCode::CONFLICT, &msg))?;
+    let task = task.clone();
+    sync_approval_items(&mut store, &task);
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn update_task(
+    State(state): State<CommandCenterState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateTaskRequest>,
+) -> JsonResult {
+    let mut store = state.write().await;
+    let task = store.tasks.get_mut(&id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Task not found"))?;
+
+    if let Some(agent) = req.assigned_agent {
+        apply_assignment(task, agent);
+    }
+
+    if let Some(column) = req.board_column {
+        apply_board_move(task, &column)
+            .map_err(|msg| err(StatusCode::CONFLICT, &msg))?;
+    }
+
+    if let Some(status) = req.status {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            &format!("Direct status updates are not allowed: {status}"),
+        ));
+    }
+
+    let task = task.clone();
+    sync_approval_items(&mut store, &task);
+
+    Ok(Json(serde_json::json!({ "task": task })))
 }
 
 async fn run_task(
@@ -385,17 +578,10 @@ async fn run_task(
 ) -> JsonResult {
     let mut store = state.write().await;
 
-    {
-        let task = store.tasks.get(&id)
-            .ok_or_else(|| err(StatusCode::NOT_FOUND, "Task not found"))?;
-
-        if task.approval_required && task.approval_status != "approved" {
-            return Err(err(StatusCode::CONFLICT, "Task needs approval before run"));
-        }
-    }
-
-    let task = store.tasks.get_mut(&id).unwrap();
-    task.status = "running".into();
+    let task = store.tasks.get_mut(&id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Task not found"))?;
+    apply_run_started(task)
+        .map_err(|msg| err(StatusCode::CONFLICT, &msg))?;
 
     let (task_title, task_agent, task_client, task_id) = (
         task.title.clone(),
@@ -419,7 +605,8 @@ async fn run_task(
         completed_at:     now,
     };
 
-    store.tasks.get_mut(&id).unwrap().status = "completed".into();
+    let task = store.tasks.get_mut(&id).unwrap();
+    apply_run_completed(task);
     store.results.insert(result.id.clone(), result.clone());
 
     Ok(Json(serde_json::json!({ "result": result })))

@@ -2607,6 +2607,76 @@ fn parse_json_tool_call_object(
     Some((name, input))
 }
 
+/// Parse simple `--flag value` / `--flag` argument blocks inside `{...}` into
+/// a JSON object for test coverage and text tool-call recovery helpers.
+#[cfg(test)]
+fn parse_dash_dash_args(s: &str) -> serde_json::Value {
+    let trimmed = s.trim();
+    let inner = trimmed
+        .strip_prefix('{')
+        .and_then(|value| value.strip_suffix('}'))
+        .unwrap_or(trimmed)
+        .trim();
+
+    let chars: Vec<char> = inner.chars().collect();
+    let mut map = serde_json::Map::new();
+    let mut index = 0;
+
+    while index < chars.len() {
+        while index < chars.len() && (chars[index].is_whitespace() || chars[index] == ',') {
+            index += 1;
+        }
+
+        if index >= chars.len() || chars[index] != '-' || index + 1 >= chars.len() || chars[index + 1] != '-' {
+            break;
+        }
+
+        index += 2;
+        let key_start = index;
+        while index < chars.len() && (chars[index].is_ascii_alphanumeric() || chars[index] == '_' || chars[index] == '-') {
+            index += 1;
+        }
+        if key_start == index {
+            break;
+        }
+
+        let key: String = chars[key_start..index].iter().collect();
+
+        while index < chars.len() && chars[index].is_whitespace() {
+            index += 1;
+        }
+
+        if index >= chars.len() || chars[index] == ',' {
+            map.insert(key, serde_json::Value::Bool(true));
+            continue;
+        }
+
+        let value = if chars[index] == '"' {
+            index += 1;
+            let value_start = index;
+            while index < chars.len() && chars[index] != '"' {
+                index += 1;
+            }
+            let parsed: String = chars[value_start..index.min(chars.len())].iter().collect();
+            if index < chars.len() && chars[index] == '"' {
+                index += 1;
+            }
+            serde_json::Value::String(parsed)
+        } else {
+            let value_start = index;
+            while index < chars.len() && chars[index] != ',' && !chars[index].is_whitespace() {
+                index += 1;
+            }
+            let parsed: String = chars[value_start..index].iter().collect();
+            serde_json::Value::String(parsed)
+        };
+
+        map.insert(key, value);
+    }
+
+    serde_json::Value::Object(map)
+}
+
 /// Parse arrow-syntax tool calls like `{tool => "name", args => {...}}`.
 fn parse_arrow_syntax_tool_call(
     s: &str,
@@ -2819,6 +2889,7 @@ mod tests {
             Ok(CompletionResponse {
                 content: vec![ContentBlock::Text {
                     text: "Hello from the agent!".to_string(),
+                    provider_metadata: None,
                 }],
                 stop_reason: StopReason::EndTurn,
                 tool_calls: vec![],
@@ -2843,6 +2914,7 @@ mod tests {
             Ok(CompletionResponse {
                 content: vec![ContentBlock::Text {
                     text: self.text.clone(),
+                    provider_metadata: None,
                 }],
                 stop_reason: StopReason::EndTurn,
                 tool_calls: vec![],
@@ -2865,6 +2937,7 @@ mod tests {
             Ok(CompletionResponse {
                 content: vec![ContentBlock::Text {
                     text: "NO_REPLY".to_string(),
+                    provider_metadata: None,
                 }],
                 stop_reason: StopReason::EndTurn,
                 tool_calls: vec![],
@@ -2954,6 +3027,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "NO_REPLY".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
@@ -3075,7 +3149,6 @@ mod tests {
             None, // hooks
             None, // context_window_tokens
             None, // process_manager
-            None, // user_content_blocks
         )
         .await
         .expect("Loop should complete without error");
@@ -3280,6 +3353,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "Recovered after retry!".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
@@ -4259,6 +4333,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: r#"Let me search for that. <function=web_search>{"query":"rust async"}</function>"#.to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![], // BUG: no tool_calls!
@@ -4272,6 +4347,7 @@ mod tests {
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "Based on the search results, Rust async is great!".to_string(),
+                        provider_metadata: None,
                     }],
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],

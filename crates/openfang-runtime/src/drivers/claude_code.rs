@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_new_defaults_to_claude() {
-        let driver = ClaudeCodeDriver::new(None);
+        let driver = ClaudeCodeDriver::new(None, false);
         assert_eq!(driver.cli_path, "claude");
         assert_eq!(driver.message_timeout_secs, DEFAULT_MESSAGE_TIMEOUT_SECS);
         assert!(driver.active_pids().is_empty());
@@ -632,13 +632,13 @@ mod tests {
 
     #[test]
     fn test_new_with_custom_path() {
-        let driver = ClaudeCodeDriver::new(Some("/usr/local/bin/claude".to_string()));
+        let driver = ClaudeCodeDriver::new(Some("/usr/local/bin/claude".to_string()), false);
         assert_eq!(driver.cli_path, "/usr/local/bin/claude");
     }
 
     #[test]
     fn test_new_with_empty_path() {
-        let driver = ClaudeCodeDriver::new(Some(String::new()));
+        let driver = ClaudeCodeDriver::new(Some(String::new()), false);
         assert_eq!(driver.cli_path, "claude");
     }
 

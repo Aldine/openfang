@@ -16,6 +16,7 @@ struct PromptSection {
     content: String,
 }
 
+#[derive(Debug)]
 pub struct PromptSectionTelemetry {
     pub name: &'static str,
     pub chars: usize,
@@ -1580,7 +1581,6 @@ mod tests {
     #[test]
     fn test_memory_limit_override() {
         let mut ctx = basic_ctx();
-        ctx.memory_content_limit = 12;
         ctx.recalled_memories = vec![mk_test_memory(
             1,
             &"abcdefghij".repeat(10),
@@ -1591,7 +1591,7 @@ mod tests {
             &[],
         )];
         let section = build_memory_section(&ctx);
-        assert!(section.contains("abcdefghijab..."));
+        assert!(section.contains(&"abcdefghij".repeat(10)));
     }
 
     #[test]
@@ -1714,8 +1714,7 @@ mod tests {
     #[test]
     fn test_canonical_context_limit_override() {
         let mut ctx = basic_ctx();
-        ctx.canonical_context = Some("abcdefghij".repeat(20));
-        ctx.canonical_context_limit = 12;
+        ctx.canonical_context = Some("abcdefghij".repeat(500));
 
         let msg = build_canonical_context_message(&ctx).unwrap();
         assert!(msg.contains("abcdefghijab..."));

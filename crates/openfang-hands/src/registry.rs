@@ -418,19 +418,14 @@ fn check_requirement(req: &HandRequirement) -> bool {
         RequirementType::Binary => {
             // Check if binary exists on PATH.
             // For python3, also try "python" (Windows ships python not python3).
-            if which_binary(&req.check_value) {
-                return true;
-            }
             if req.check_value == "python3" {
-                return which_binary("python");
+                return check_python3_available();
             }
             if req.check_value == "chromium" {
-                // Try common Chromium/Chrome binary names across platforms
-                return which_binary("chromium-browser")
-                    || which_binary("google-chrome")
-                    || which_binary("google-chrome-stable")
-                    || which_binary("chrome")
-                    || std::env::var("CHROME_PATH").map(|v| !v.is_empty()).unwrap_or(false);
+                return check_chromium_available();
+            }
+            if which_binary(&req.check_value) {
+                return true;
             }
             false
         }

@@ -14,6 +14,7 @@ import ResearchTab from './ResearchTab';
 import PortfolioTab from './PortfolioTab';
 import AlertsTab from './AlertsTab';
 import AdvancedInvestmentsTab from './AdvancedInvestmentsTab';
+import BusinessIntelligenceTab from './BusinessIntelligenceTab';
 
 export default function InvestmentsPage({ defaultTab = 'recommended', defaultView = 'simple', defaultWizard = false }) {
   const [activeTab, setActiveTab] = useState(defaultTab);
@@ -143,7 +144,7 @@ export default function InvestmentsPage({ defaultTab = 'recommended', defaultVie
         alertCount={alertCount}
       />
 
-      {activeTab !== 'recommended' && activeTab !== 'advanced' && (
+      {activeTab !== 'recommended' && activeTab !== 'advanced' && activeTab !== 'intelligence' && (
         <InvestmentsViewToggle view={view} onChange={setView} />
       )}
 
@@ -163,6 +164,9 @@ export default function InvestmentsPage({ defaultTab = 'recommended', defaultVie
               onApplyTemplate={handleApplyTemplate}
               onOpenWizard={() => setWizardOpen(true)}
             />
+          )}
+          {activeTab === 'intelligence' && (
+            <BusinessIntelligenceTab onOpenWizard={() => setWizardOpen(true)} />
           )}
           {activeTab === 'watchlist' && (
             <WatchlistTab

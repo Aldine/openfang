@@ -357,11 +357,11 @@ pub async fn build_router(
             axum::routing::post(routes::start_orchestrated_workflow),
         )
         .route(
-            "/api/workflows/{run_id}/resume",
+            "/api/workflow-runs/{run_id}/resume",
             axum::routing::post(routes::resume_orchestrated_workflow),
         )
         .route(
-            "/api/workflows/{run_id}",
+            "/api/workflow-runs/{run_id}",
             axum::routing::get(routes::get_orchestrated_workflow_run),
         )
         .route(
@@ -498,7 +498,7 @@ pub async fn build_router(
             axum::routing::get(routes::list_workflows).post(routes::create_workflow),
         )
         .route(
-            "/api/workflows/{id}",
+            "/api/workflow-definitions/{id}",
             axum::routing::get(routes::get_workflow)
                 .put(routes::update_workflow)
                 .delete(routes::delete_workflow),
@@ -998,7 +998,6 @@ pub async fn build_router(
         )
         // Dashboard authentication endpoints
         .route("/api/auth/login", axum::routing::post(routes::auth_login))
-        .route("/api/auth/logout", axum::routing::post(routes::auth_logout))
         .route("/api/auth/check", axum::routing::get(routes::auth_check))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

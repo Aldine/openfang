@@ -2,6 +2,7 @@
 
 const TABS = [
   { id: 'recommended', label: 'Recommended' },
+  { id: 'intelligence', label: 'Business Intelligence' },
   { id: 'watchlist', label: 'Watchlist' },
   { id: 'research', label: 'Research' },
   { id: 'portfolio', label: 'Portfolio' },

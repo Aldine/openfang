@@ -395,13 +395,7 @@ impl ClawHubClient {
             limit.min(50)
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub search failed: {e}")))?;
+        let response = self.get_with_retry(&url, "ClawHub search").await?;
 
         if !response.status().is_success() {
             return Err(SkillError::Network(format!(
@@ -438,13 +432,7 @@ impl ClawHubClient {
             url.push_str(&format!("&cursor={}", urlencoded(c)));
         }
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub browse failed: {e}")))?;
+        let response = self.get_with_retry(&url, "ClawHub browse").await?;
 
         if !response.status().is_success() {
             return Err(SkillError::Network(format!(
@@ -468,13 +456,7 @@ impl ClawHubClient {
     pub async fn get_skill(&self, slug: &str) -> Result<ClawHubSkillDetail, SkillError> {
         let url = format!("{}/skills/{}", self.base_url, urlencoded(slug));
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub detail failed: {e}")))?;
+        let response = self.get_with_retry(&url, "ClawHub detail").await?;
 
         if !response.status().is_success() {
             return Err(SkillError::Network(format!(
@@ -512,13 +494,7 @@ impl ClawHubClient {
             urlencoded(path)
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .header("User-Agent", "OpenFang/0.1")
-            .send()
-            .await
-            .map_err(|e| SkillError::Network(format!("ClawHub file fetch failed: {e}")))?;
+        let response = self.get_with_retry(&url, "ClawHub file fetch").await?;
 
         if !response.status().is_success() {
             return Err(SkillError::Network(format!(
